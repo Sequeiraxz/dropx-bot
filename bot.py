@@ -521,6 +521,21 @@ async def fetch_url(url: str):
     except Exception as e:
         return None, str(e)
 
+# --- MoonSec V2 verification ---
+def looks_like_moonsec_v2(code_text: str) -> bool:
+    score = 0
+    if "Protected_by_MoonSecV2" in code_text:
+        score += 3
+    if re.search(r'[\u3480-\u34c0]{5,}', code_text):
+        score += 3
+    if "_msec" in code_text:
+        score += 2
+    if re.search(r'#\[\[[^\]]{3,}\]\]', code_text):
+        score += 1
+    if "discord.gg/gQEH" in code_text:
+        score += 1
+    return score >= 3
+
 # --- Prometheus button ---
 class PrometheusButton(discord.ui.Button):
     def __init__(self, enabled=True):
@@ -555,7 +570,7 @@ class PrometheusButton(discord.ui.Button):
             file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
         )
 
-# --- MoonSec V2 button ---
+# --- MoonSec V2 button (with verification) ---
 class MoonSecV2Button(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
@@ -571,6 +586,25 @@ class MoonSecV2Button(discord.ui.Button):
         if source is None:
             await interaction.response.send_message("Script not found.", ephemeral=True)
             return
+
+        code_text = source.decode("utf-8", "ignore")
+
+        if not looks_like_moonsec_v2(code_text):
+            embed = discord.Embed(
+                title="MoonSec V2 — Verification Failed",
+                description=(
+                    "This script **does not look like MoonSec V2**.\n\n"
+                    "Signs checked: `Protected_by_MoonSecV2`, unicode identifiers, `_msec`, etc.\n\n"
+                    "If you're sure it is MoonSec V2, the deobfuscator may still fail. "
+                    "Try the **Prometheus** button instead if it's Prometheus/WeAreDevs."
+                ),
+                color=0xE74C3C,
+            )
+            embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
+            embed.set_footer(text="If you want to force it, contact the bot owner.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         self.view.stop()
         embed = discord.Embed(
             title="DropX — MoonSec V2",
@@ -663,7 +697,7 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     elif is_moonsec:
         desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **MoonSec V2** to deobfuscate."
     else:
-        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nYou can try **Prometheus** or **MoonSec V2** (may fail if it doesn't match)."
+        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nYou can try **Prometheus** or **MoonSec V2**."
 
     embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
     embed.set_footer(text="Pick a deobfuscator below.")
