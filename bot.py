@@ -5,6 +5,8 @@ import tempfile
 import re
 import json
 import math
+import time
+import platform
 import aiohttp
 import discord
 from collections import Counter
@@ -21,6 +23,20 @@ CONFIG_FILE = "config.json"
 HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 WEAREDEVS_EMOJI_ID = 1565837351769481216
+
+# --- GET config ---
+RAW_DOMAINS = [
+    "https://pastebin.com/",
+    "https://raw.githubusercontent.com/",
+    "https://gist.githubusercontent.com/",
+    "https://pastefy.app/",
+    "https://paste.ee/r/",
+    "https://rawscripts.net/raw/",
+    "https://scriptblox.com/script/",
+    "https://pandadevelopment.net/virtual/file/",
+]
+ROBLOX_UA = "Roblox/WinInetRobloxApp/0.673.0.6730711 (GlobalDist; RobloxDirectDownload)"
+PROXY = None  # ("http://ip:porta", "user", "pass") se quiseres proxy
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -485,23 +501,18 @@ class PrometheusButton(discord.ui.Button):
         if source is None:
             await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
             return
-
         self.view.stop()
         await interaction.response.edit_message(
             content="⏳ **DropX pode demorar um pouco a desofuscar. Por favor, aguarda...**",
-            embed=None,
-            view=None,
+            embed=None, view=None,
         )
-
         result, err = await run_deobf(source)
-
         if result is None:
             await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=False)
             return
         if len(result) > 8 * 1024 * 1024:
             await interaction.followup.send("❌ output > 8 MiB.", ephemeral=False)
             return
-
         final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
         await interaction.followup.send(
             content=f"✅ desofuscado — {len(final)} bytes",
@@ -546,7 +557,7 @@ async def get_source(ctx: commands.Context, url: str = None):
         if len(source) > 5 * 1024 * 1024:
             return None, "❌ ficheiro > 5 MiB."
         return source, ""
-    return None, "❌ uso: `.detector` + anexo `.txt`/`.lua` **ou** `.detector <url_raw>`"
+    return None, "❌ uso: anexo `.txt`/`.lua` **ou** um URL raw."
 
 # --- Comando .deobf ---
 @bot.command(name="deobf")
@@ -557,22 +568,18 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     if ctx.channel.id != config["channel_id"]:
         await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
         return
-
     source, err = await get_source(ctx, url)
     if source is None:
         await ctx.reply(err, delete_after=5)
         return
-
     code_text = source.decode("utf-8", "ignore")
     results = detect(code_text)
     top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
     is_prometheus = (top_name == "Prometheus")
-
     if is_prometheus:
         desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica no botão abaixo para desofuscar."
     else:
         desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
-
     embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
     embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
     await ctx.reply(embed=embed, view=DeobfView(source, enabled=is_prometheus))
@@ -586,27 +593,21 @@ async def detector(ctx: commands.Context, *, url: str = None):
     if ctx.channel.id != config["channel_id"]:
         await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
         return
-
     source, err = await get_source(ctx, url)
     if source is None:
         await ctx.reply(err, delete_after=5)
         return
-
     code_text = source.decode("utf-8", "ignore")
     results = detect(code_text)
-
     if not results or results[0][0] == "Custom / Unknown":
         await ctx.reply("🔍 **Resultado:** `Custom / Unknown` (score 1/10)")
         return
-
     lines = []
     for name, pct in results[:5]:
-        if pct <= 0:
-            continue
+        if pct <= 0: continue
         bar_len = int(round(pct / 10))
         bar = "█" * bar_len + "░" * (10 - bar_len)
         lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
-
     top_name, top_pct = results[0]
     embed = discord.Embed(
         title="🔍 DropX Detector",
@@ -616,9 +617,85 @@ async def detector(ctx: commands.Context, *, url: str = None):
     embed.set_footer(text=f"Tamanho analisado: {len(code_text)} caracteres")
     await ctx.reply(embed=embed)
 
+# --- Comando .get (User-Agent Roblox + proxy opcional) ---
+async def asyncget(url: str, headers: dict = None, proxy=None):
+    kwargs = {}
+    if proxy:
+        kwargs["proxy"] = proxy[0]
+        kwargs["proxy_auth"] = aiohttp.BasicAuth(proxy[1], proxy[2])
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=25), **kwargs) as resp:
+            body = await resp.text(errors="replace")
+            return resp.status, resp.headers.get("Content-Type", "unknown"), body
+
+@bot.command(name="get")
+async def get(ctx: commands.Context, *, url: str = None):
+    if not url:
+        await ctx.reply("Usage: `.get <url>`", delete_after=8)
+        return
+    url = url.strip()
+    if not re.match(r"^https?://", url):
+        await ctx.reply("Invalid URL (must start with http:// or https://).", delete_after=8)
+        return
+    headers = {"User-Agent": ROBLOX_UA, "Accept": "*/*"}
+    is_raw = any(url.startswith(d) for d in RAW_DOMAINS)
+    use_proxy = PROXY if (PROXY and not is_raw) else None
+    try:
+        status, ctype, body = await asyncget(url, headers=headers, proxy=use_proxy)
+    except Exception as e:
+        await ctx.reply(f"Request failed: `{e}`", delete_after=10)
+        return
+    truncated = body[:1500] + ("\n... [truncated]" if len(body) > 1500 else "")
+    embed = discord.Embed(title="GET Result", color=0x2ECC71 if status == 200 else 0xE74C3C)
+    embed.add_field(name="URL", value=f"`{url[:200]}`", inline=False)
+    embed.add_field(name="Status", value=str(status), inline=True)
+    embed.add_field(name="Type", value=ctype[:80], inline=True)
+    embed.add_field(name="Size", value=f"{len(body)} chars", inline=True)
+    embed.add_field(name="Body (first 1.5k)", value=f"```\n{truncated}\n```", inline=False)
+    if status == 403:
+        embed.set_footer(text="403 Forbidden — endpoint requires auth/headers this bot does not have.")
+    await ctx.reply(embed=embed)
+
+# --- Comando .stats ---
+@bot.command(name="stats")
+async def stats(ctx: commands.Context):
+    uptime_sec = int(time.time() - getattr(bot, "launch_time", time.time()))
+    days, rem = divmod(uptime_sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+    embed = discord.Embed(title="DropX — Live Stats", color=0x2ECC71)
+    embed.add_field(name="Uptime", value=uptime_str, inline=True)
+    embed.add_field(name="Latency", value=f"{round(bot.latency*1000, 1)} ms", inline=True)
+    embed.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
+    embed.add_field(name="Users", value=str(sum(g.member_count or 0 for g in bot.guilds)), inline=True)
+    embed.add_field(name="Channels", value=str(sum(len(g.channels) for g in bot.guilds)), inline=True)
+    embed.add_field(name="Python", value=platform.python_version(), inline=True)
+    embed.add_field(name="discord.py", value=discord.__version__, inline=True)
+    embed.set_footer(text="Updated in real time")
+    await ctx.reply(embed=embed)
+
+# --- Comando .helpp ---
+@bot.command(name="helpp")
+async def helpp(ctx: commands.Context):
+    embed = discord.Embed(
+        title="DropX — Commands",
+        description="Prefix: `.`  •  Bot must be hosted in the channel.",
+        color=0x2ECC71,
+    )
+    embed.add_field(name="`.alojar`", value="Host the bot in the current channel (admin only).", inline=False)
+    embed.add_field(name="`.detector`", value="Detect the obfuscator of an attached `.lua`/`.txt` file or raw URL.", inline=False)
+    embed.add_field(name="`.deobf`", value="Deobfuscate a Prometheus/WeAreDevs script (attachment or URL).", inline=False)
+    embed.add_field(name="`.get <url>`", value="Fetch a raw URL and show status + body (first 1.5k chars).", inline=False)
+    embed.add_field(name="`.stats`", value="Show live bot stats (uptime, latency, servers).", inline=False)
+    embed.add_field(name="`.helpp`", value="Show this message.", inline=False)
+    embed.set_footer(text="DropX • Prometheus / WeAreDevs deobfuscator")
+    await ctx.reply(embed=embed)
+
 # --- Eventos / Arranque ---
 @bot.event
 async def on_ready():
+    bot.launch_time = time.time()
     print(f"Bot ligado: {bot.user}", flush=True)
     try:
         await bot.tree.sync()
@@ -628,10 +705,8 @@ async def on_ready():
 async def main():
     print(">>> MAIN INICIOU", flush=True)
     print(">>> TOKEN definido:", bool(TOKEN), flush=True)
-    print(">>> PORT:", os.environ.get("PORT"), flush=True)
     await start_web_server()
     print(">>> SERVIDOR WEB OK", flush=True)
-    print(">>> A LIGAR AO DISCORD...", flush=True)
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
