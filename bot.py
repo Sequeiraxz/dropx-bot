@@ -24,7 +24,6 @@ HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 WEAREDEVS_EMOJI_ID = 1565837351769481216
 
-# --- GET config ---
 RAW_DOMAINS = [
     "https://pastebin.com/",
     "https://raw.githubusercontent.com/",
@@ -36,7 +35,7 @@ RAW_DOMAINS = [
     "https://pandadevelopment.net/virtual/file/",
 ]
 ROBLOX_UA = "Roblox/WinInetRobloxApp/0.673.0.6730711 (GlobalDist; RobloxDirectDownload)"
-PROXY = None  # ("http://ip:porta", "user", "pass") se quiseres proxy
+PROXY = None
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -54,9 +53,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# =====================================================================
-# DETECTOR
-# =====================================================================
 SIGNATURES = {
     "Prometheus": [
         (20, re.compile(r'return\s*\(function\s*\(\.\.\.\)\s*local\s+\w\s*=\s*\{')),
@@ -617,7 +613,7 @@ async def detector(ctx: commands.Context, *, url: str = None):
     embed.set_footer(text=f"Tamanho analisado: {len(code_text)} caracteres")
     await ctx.reply(embed=embed)
 
-# --- Comando .get (User-Agent Roblox + proxy opcional) ---
+# --- Comando .get ---
 async def asyncget(url: str, headers: dict = None, proxy=None):
     kwargs = {}
     if proxy:
@@ -630,6 +626,7 @@ async def asyncget(url: str, headers: dict = None, proxy=None):
 
 @bot.command(name="get")
 async def get(ctx: commands.Context, *, url: str = None):
+    print(f"[GET] url={url!r}", flush=True)
     if not url:
         await ctx.reply("Usage: `.get <url>`", delete_after=8)
         return
@@ -637,14 +634,19 @@ async def get(ctx: commands.Context, *, url: str = None):
     if not re.match(r"^https?://", url):
         await ctx.reply("Invalid URL (must start with http:// or https://).", delete_after=8)
         return
+
     headers = {"User-Agent": ROBLOX_UA, "Accept": "*/*"}
     is_raw = any(url.startswith(d) for d in RAW_DOMAINS)
     use_proxy = PROXY if (PROXY and not is_raw) else None
+
     try:
         status, ctype, body = await asyncget(url, headers=headers, proxy=use_proxy)
+        print(f"[GET] status={status} len={len(body)}", flush=True)
     except Exception as e:
-        await ctx.reply(f"Request failed: `{e}`", delete_after=10)
+        print(f"[GET] EXCEPTION: {e!r}", flush=True)
+        await ctx.reply(f"❌ Request failed: `{e!r}`", delete_after=15)
         return
+
     truncated = body[:1500] + ("\n... [truncated]" if len(body) > 1500 else "")
     embed = discord.Embed(title="GET Result", color=0x2ECC71 if status == 200 else 0xE74C3C)
     embed.add_field(name="URL", value=f"`{url[:200]}`", inline=False)
@@ -675,9 +677,9 @@ async def stats(ctx: commands.Context):
     embed.set_footer(text="Updated in real time")
     await ctx.reply(embed=embed)
 
-# --- Comando .helpp ---
-@bot.command(name="helpp")
-async def helpp(ctx: commands.Context):
+# --- Comando .help ---
+@bot.command(name="help")
+async def help_cmd(ctx: commands.Context):
     embed = discord.Embed(
         title="DropX — Commands",
         description="Prefix: `.`  •  Bot must be hosted in the channel.",
@@ -688,9 +690,20 @@ async def helpp(ctx: commands.Context):
     embed.add_field(name="`.deobf`", value="Deobfuscate a Prometheus/WeAreDevs script (attachment or URL).", inline=False)
     embed.add_field(name="`.get <url>`", value="Fetch a raw URL and show status + body (first 1.5k chars).", inline=False)
     embed.add_field(name="`.stats`", value="Show live bot stats (uptime, latency, servers).", inline=False)
-    embed.add_field(name="`.helpp`", value="Show this message.", inline=False)
+    embed.add_field(name="`.help`", value="Show this message.", inline=False)
     embed.set_footer(text="DropX • Prometheus / WeAreDevs deobfuscator")
     await ctx.reply(embed=embed)
+
+# --- Handler de erros (diagnóstico) ---
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    print(f"[CMD ERROR] {ctx.command}: {error!r}", flush=True)
+    try:
+        await ctx.reply(f"⚠️ Erro no comando `{ctx.command}`:\n```\n{error!r}\n```", delete_after=20)
+    except Exception as e:
+        print(f"Falha ao responder erro: {e}", flush=True)
 
 # --- Eventos / Arranque ---
 @bot.event
