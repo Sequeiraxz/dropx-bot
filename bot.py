@@ -16,7 +16,7 @@ from aiohttp import web
 TOKEN = "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ"
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
-NODE = os.environ.get("NODE", "./node-portable/bin/node")
+NODE = os.environ.get("NODE", "node")
 DEOBF_TIMEOUT = 120
 
 HEADER = "Deobfuscate By DropX :)\n\n"
