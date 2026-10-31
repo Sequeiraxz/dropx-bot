@@ -1,3 +1,6 @@
+Aqui tens o `bot.py` completo, já com o detector integrado. Podes copiar tudo e substituir no GitHub.
+
+```python
 import os
 import io
 import asyncio
@@ -8,6 +11,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from aiohttp import web
+from detector import detect, print_report
 
 # ⚠️ Usa a variável de ambiente do Render (DISCORD_TOKEN)
 TOKEN = os.environ.get("DISCORD_TOKEN", "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ")
@@ -87,8 +91,8 @@ async def fetch_url(url: str) -> tuple[bytes | None, str]:
 
 # --- Botões e Comando ---
 class PrometheusButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Prometheus", style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="wearedevs", id=WEAREDEVS_EMOJI_ID))
+    def __init__(self, enabled=True):
+        super().__init__(label="Prometheus", style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="wearedevs", id=WEAREDEVS_EMOJI_ID), disabled=not enabled)
 
     async def callback(self, interaction: discord.Interaction):
         source = getattr(self.view, "source", None)
@@ -112,10 +116,10 @@ class PrometheusButton(discord.ui.Button):
         await interaction.followup.send(content=f"✅ desofuscado — {len(final)} bytes", file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"))
 
 class DeobfView(discord.ui.View):
-    def __init__(self, source: bytes):
+    def __init__(self, source: bytes, enabled=True):
         super().__init__(timeout=600)
         self.source = source
-        self.add_item(PrometheusButton())
+        self.add_item(PrometheusButton(enabled=enabled))
 
 # --- Comando para Alojar o Bot no Canal ---
 @bot.command(name="alojar")
@@ -124,7 +128,7 @@ async def alojar(ctx: commands.Context):
     config["channel_id"] = ctx.channel.id
     save_config(config)
     try:
-        await ctx.message.delete() # Apaga a mensagem do admin
+        await ctx.message.delete()
     except:
         pass
     await ctx.reply(f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).", delete_after=10)
@@ -134,15 +138,13 @@ async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
 
-# --- Comando de Deobfuscar (com verificação de canal) ---
+# --- Comando de Deobfuscar (com verificação de canal e detector) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
-    # Verifica se o bot já foi alojado num canal
     if config["channel_id"] is None:
         await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
         return
         
-    # Verifica se a mensagem foi enviada no canal correto
     if ctx.channel.id != config["channel_id"]:
         await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
         return
@@ -168,15 +170,28 @@ async def deobf(ctx: commands.Context, *, url: str = None):
         await ctx.reply("❌ uso: `.deobf` + anexo `.txt`/`.lua` **ou** `.deobf <url_raw>`", delete_after=5)
         return
 
-    # Apaga a mensagem do utilizador para não deixar o ficheiro/script no chat
     try:
         await ctx.message.delete()
     except:
         pass
 
-    embed = discord.Embed(title="DropX Deobfuscator", description="**Ofuscador detetado:** Prometheus (WeAreDevs)\n\nClica no botão abaixo para desofuscar.", color=0x2B2D31)
+    try:
+        code_text = source.decode("utf-8", "ignore")
+        results = detect(code_text)
+        top_name, top_pct = results[0] if results else ("Custom / Unknown", 0)
+        is_prometheus = (top_name == "Prometheus")
+    except Exception:
+        top_name, top_pct = "Custom / Unknown", 0
+        is_prometheus = False
+
+    if is_prometheus:
+        desc = f"**Ofuscador detetado:** Prometheus (WeAreDevs)\n**Confiança:** {top_pct}%\n\nClica no botão abaixo para desofuscar."
+    else:
+        desc = f"**Ofuscador detetado:** {top_name}\n**Confiança:** {top_pct}%\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
+
+    embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
     embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
-    await ctx.reply(embed=embed, view=DeobfView(source))
+    await ctx.reply(embed=embed, view=DeobfView(source, enabled=is_prometheus))
 
 @bot.event
 async def on_ready():
@@ -192,3 +207,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
