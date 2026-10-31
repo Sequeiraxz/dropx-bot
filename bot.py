@@ -438,7 +438,7 @@ def score_1_to_10(pct: float) -> int:
 # =====================================================================
 # FIM DO DETECTOR
 # =====================================================================
-# --- Servidor Web ---
+# --- Web server ---
 async def handle_ping(request):
     return web.Response(text="DropX Bot Online")
 
@@ -450,9 +450,9 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Servidor web a correr na porta {port}", flush=True)
+    print(f"Web server running on port {port}", flush=True)
 
-# --- Desofuscador Prometheus ---
+# --- Prometheus deobfuscator ---
 async def run_deobf(source: bytes):
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, "input.lua")
@@ -470,13 +470,13 @@ async def run_deobf(source: bytes):
         except asyncio.TimeoutError:
             return None, f"timeout ({DEOBF_TIMEOUT}s)"
         except FileNotFoundError:
-            return None, "Node.js não encontrado"
+            return None, "Node.js not found"
         if proc.returncode != 0 or not os.path.exists(out_path):
             return None, stderr.decode("utf-8", "replace")[-1200:]
         with open(out_path, "rb") as f:
             return f.read(), ""
 
-# --- Desofuscador MoonSec V2 ---
+# --- MoonSec V2 deobfuscator ---
 async def run_moonsec_v2(source: bytes):
     async with _moonsec_lock:
         with tempfile.TemporaryDirectory() as tmp:
@@ -494,12 +494,12 @@ async def run_moonsec_v2(source: bytes):
             except asyncio.TimeoutError:
                 return None, "timeout (300s)"
             except FileNotFoundError:
-                return None, "Python/main.py não encontrado"
+                return None, "Python/main.py not found"
 
             out_path = os.path.join(MOONSEC_V2_DIR, "output.lua")
             if proc.returncode != 0 or not os.path.exists(out_path):
                 msg = (stdout + stderr).decode("utf-8", "replace").strip()
-                return None, msg[-1200:] or "falhou sem output"
+                return None, msg[-1200:] or "failed with no output"
 
             with open(out_path, "rb") as f:
                 result = f.read()
@@ -511,7 +511,7 @@ async def run_moonsec_v2(source: bytes):
 
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
-        return None, "URL inválido"
+        return None, "Invalid URL"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
@@ -521,7 +521,7 @@ async def fetch_url(url: str):
     except Exception as e:
         return None, str(e)
 
-# --- Botão Prometheus ---
+# --- Prometheus button ---
 class PrometheusButton(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
@@ -535,32 +535,32 @@ class PrometheusButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         source = getattr(self.view, "source", None)
         if source is None:
-            await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
+            await interaction.response.send_message("Script not found.", ephemeral=True)
             return
         self.view.stop()
         await interaction.response.edit_message(
-            content="⏳ **A desofuscar com Prometheus... aguarda.**",
+            content="Deobfuscating with Prometheus... please wait.",
             embed=None, view=None,
         )
         result, err = await run_deobf(source)
         if result is None:
-            await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=False)
+            await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
             return
         if len(result) > 8 * 1024 * 1024:
-            await interaction.followup.send("❌ output > 8 MiB.", ephemeral=False)
+            await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
             return
         final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
         await interaction.followup.send(
-            content=f"✅ desofuscado — {len(final)} bytes",
+            content=f"Deobfuscated — {len(final)} bytes",
             file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
         )
 
-# --- Botão MoonSec V2 ---
+# --- MoonSec V2 button ---
 class MoonSecV2Button(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
             label="MoonSec V2",
-            style=discord.ButtonStyle.success,
+            style=discord.ButtonStyle.secondary,
             emoji=discord.PartialEmoji(name="moonsec", id=MOONSEC_EMOJI_ID),
             disabled=not enabled,
             row=0,
@@ -569,12 +569,12 @@ class MoonSecV2Button(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         source = getattr(self.view, "source", None)
         if source is None:
-            await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
+            await interaction.response.send_message("Script not found.", ephemeral=True)
             return
         self.view.stop()
         embed = discord.Embed(
             title="DropX — MoonSec V2",
-            description="⏳ A desofuscar... pode demorar.",
+            description="Deobfuscating... this may take a while.",
             color=0x2ECC71,
         )
         embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
@@ -582,14 +582,14 @@ class MoonSecV2Button(discord.ui.Button):
 
         result, err = await run_moonsec_v2(source)
         if result is None:
-            await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=False)
+            await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
             return
         if len(result) > 8 * 1024 * 1024:
-            await interaction.followup.send("❌ output > 8 MiB.", ephemeral=False)
+            await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
             return
         out_embed = discord.Embed(
             title="DropX — MoonSec V2",
-            description=f"✅ Desofuscado — {len(result)} bytes",
+            description=f"Deobfuscated — {len(result)} bytes",
             color=0x2ECC71,
         )
         out_embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
@@ -605,48 +605,48 @@ class DeobfView(discord.ui.View):
         self.add_item(PrometheusButton(enabled=prometheus_enabled))
         self.add_item(MoonSecV2Button(enabled=moonsec_enabled))
 
-# --- Comando .alojar ---
+# --- .alojar command ---
 @bot.command(name="alojar")
 @commands.has_permissions(administrator=True)
 async def alojar(ctx: commands.Context):
     config["channel_id"] = ctx.channel.id
     save_config(config)
     await ctx.reply(
-        f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).",
+        f"Bot hosted successfully. From now on, the bot will only respond in this channel ({ctx.channel.mention}).",
         delete_after=10,
     )
 
 @alojar.error
 async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
+        await ctx.reply("Only administrators can use this command.", delete_after=5)
 
-# --- Helper para obter código (anexo ou URL) ---
+# --- Helper to get source (attachment or URL) ---
 async def get_source(ctx: commands.Context, url: str = None):
     if ctx.message.attachments:
         att = ctx.message.attachments[0]
         if not att.filename.endswith((".txt", ".lua", ".luau")):
-            return None, "❌ anexo tem de ser `.txt`/`.lua`/`.luau`."
+            return None, "Attachment must be `.txt`/`.lua`/`.luau`."
         if att.size > 5 * 1024 * 1024:
-            return None, "❌ ficheiro > 5 MiB."
+            return None, "File > 5 MiB."
         return await att.read(), ""
     elif url:
         source, err = await fetch_url(url.strip())
         if source is None:
-            return None, f"❌ não consegui obter o URL: {err}"
+            return None, f"Could not fetch URL: {err}"
         if len(source) > 5 * 1024 * 1024:
-            return None, "❌ ficheiro > 5 MiB."
+            return None, "File > 5 MiB."
         return source, ""
-    return None, "❌ uso: anexo `.txt`/`.lua` **ou** um URL raw."
+    return None, "Usage: attach `.txt`/`.lua` **or** provide a raw URL."
 
-# --- Comando .deobf (Prometheus + MoonSec V2) ---
+# --- .deobf (Prometheus + MoonSec V2) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
     if config["channel_id"] is None:
-        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
+        await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
         return
     if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
+        await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
         return
     source, err = await get_source(ctx, url)
     if source is None:
@@ -659,24 +659,24 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     is_moonsec = (top_name == "MoonSec V2")
 
     if is_prometheus:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica em **Prometheus** para desofuscar."
+        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **Prometheus** to deobfuscate."
     elif is_moonsec:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica em **MoonSec V2** para desofuscar."
+        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **MoonSec V2** to deobfuscate."
     else:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nPodes tentar **Prometheus** ou **MoonSec V2** (pode falhar se não corresponder)."
+        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nYou can try **Prometheus** or **MoonSec V2** (may fail if it doesn't match)."
 
     embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
-    embed.set_footer(text="Escolhe o desofuscador abaixo.")
+    embed.set_footer(text="Pick a deobfuscator below.")
     await ctx.reply(embed=embed, view=DeobfView(source, prometheus_enabled=True, moonsec_enabled=True))
 
-# --- Comando .detector ---
+# --- .detector ---
 @bot.command(name="detector")
 async def detector(ctx: commands.Context, *, url: str = None):
     if config["channel_id"] is None:
-        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
+        await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
         return
     if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
+        await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
         return
     source, err = await get_source(ctx, url)
     if source is None:
@@ -685,7 +685,7 @@ async def detector(ctx: commands.Context, *, url: str = None):
     code_text = source.decode("utf-8", "ignore")
     results = detect(code_text)
     if not results or results[0][0] == "Custom / Unknown":
-        await ctx.reply("🔍 **Resultado:** `Custom / Unknown` (score 1/10)")
+        await ctx.reply("**Result:** `Custom / Unknown` (score 1/10)")
         return
     lines = []
     for name, pct in results[:5]:
@@ -695,14 +695,14 @@ async def detector(ctx: commands.Context, *, url: str = None):
         lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
     top_name, top_pct = results[0]
     embed = discord.Embed(
-        title="🔍 DropX Detector",
-        description=f"**Mais provável:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
+        title="DropX Detector",
+        description=f"**Most likely:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
         color=0x2B2D31,
     )
-    embed.set_footer(text=f"Tamanho analisado: {len(code_text)} caracteres")
+    embed.set_footer(text=f"Analyzed size: {len(code_text)} characters")
     await ctx.reply(embed=embed)
 
-# --- Comando .get ---
+# --- .get ---
 async def asyncget(url: str, headers: dict = None, proxy=None):
     kwargs = {}
     if proxy:
@@ -733,7 +733,7 @@ async def get(ctx: commands.Context, *, url: str = None):
         print(f"[GET] status={status} len={len(body)}", flush=True)
     except Exception as e:
         print(f"[GET] EXCEPTION: {e!r}", flush=True)
-        await ctx.reply(f"❌ Request failed: `{e!r}`", delete_after=15)
+        await ctx.reply(f"Request failed: `{e!r}`", delete_after=15)
         return
 
     truncated = body[:1000] + ("\n... [truncated]" if len(body) > 1000 else "")
@@ -754,7 +754,7 @@ async def get(ctx: commands.Context, *, url: str = None):
     else:
         await ctx.reply(embed=embed)
 
-# --- Comando .stats ---
+# --- .stats ---
 @bot.command(name="stats")
 async def stats(ctx: commands.Context):
     uptime_sec = int(time.time() - getattr(bot, "launch_time", time.time()))
@@ -773,7 +773,7 @@ async def stats(ctx: commands.Context):
     embed.set_footer(text="Updated in real time")
     await ctx.reply(embed=embed)
 
-# --- Comando .help ---
+# --- .help ---
 @bot.command(name="help")
 async def help_cmd(ctx: commands.Context):
     embed = discord.Embed(
@@ -790,32 +790,32 @@ async def help_cmd(ctx: commands.Context):
     embed.set_footer(text="DropX • Prometheus / MoonSec V2")
     await ctx.reply(embed=embed)
 
-# --- Handler de erros ---
+# --- Error handler ---
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     print(f"[CMD ERROR] {ctx.command}: {error!r}", flush=True)
     try:
-        await ctx.reply(f"⚠️ Erro no comando `{ctx.command}`:\n```\n{error!r}\n```", delete_after=20)
+        await ctx.reply(f"Error in `{ctx.command}`:\n```\n{error!r}\n```", delete_after=20)
     except Exception as e:
-        print(f"Falha ao responder erro: {e}", flush=True)
+        print(f"Failed to reply error: {e}", flush=True)
 
-# --- Eventos / Arranque ---
+# --- Events / Startup ---
 @bot.event
 async def on_ready():
     bot.launch_time = time.time()
-    print(f"Bot ligado: {bot.user}", flush=True)
+    print(f"Bot online: {bot.user}", flush=True)
     try:
         await bot.tree.sync()
     except Exception as e:
-        print(f"Erro sync: {e}", flush=True)
+        print(f"Sync error: {e}", flush=True)
 
 async def main():
-    print(">>> MAIN INICIOU", flush=True)
-    print(">>> TOKEN definido:", bool(TOKEN), flush=True)
+    print(">>> MAIN STARTED", flush=True)
+    print(">>> TOKEN set:", bool(TOKEN), flush=True)
     await start_web_server()
-    print(">>> SERVIDOR WEB OK", flush=True)
+    print(">>> WEB SERVER OK", flush=True)
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
