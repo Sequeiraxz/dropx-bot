@@ -11,7 +11,6 @@ from collections import Counter
 from discord.ext import commands
 from aiohttp import web
 
-# ⚠️ Usa a variável de ambiente do Render (DISCORD_TOKEN)
 TOKEN = os.environ.get("DISCORD_TOKEN")
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
@@ -40,7 +39,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
 # =====================================================================
-# DETECTOR (Integrado — baseado no message.txt)
+# DETECTOR
 # =====================================================================
 SIGNATURES = {
     "Prometheus": [
@@ -119,7 +118,7 @@ SIGNATURES = {
         (20, re.compile(r'^.{400,}$', re.MULTILINE)),
         (15, re.compile(r'(?:[\+\-\*/%^&|]{1}){20,}')),
         (40, re.compile(r'(?:\\\d{2,3}){25,}')),
-        (25, re.compile(r'string\.char\s*\(\s*(?:\d+,){10,}\d+\s*\)'))
+        (25, re.compile(r'string\.char\s*\(\s*(?:\d+,){10,}\d+\s*\)')),
     ],
     "IronBrew3": [
         (30, re.compile(r"^--ironbrew3:tm")),
@@ -447,7 +446,9 @@ async def run_deobf(source: bytes):
         try:
             proc = await asyncio.create_subprocess_exec(
                 NODE, "bin/pdeobf.js", in_path, "-o", out_path,
-                cwd=DEOBF_DIR, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=DEOBF_DIR,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=DEOBF_TIMEOUT)
         except asyncio.TimeoutError:
