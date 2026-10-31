@@ -123,12 +123,15 @@ class DeobfView(discord.ui.View):
 async def alojar(ctx: commands.Context):
     config["channel_id"] = ctx.channel.id
     save_config(config)
-    await ctx.reply(f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).")
+    try:
+        await ctx.message.delete() # Apaga a mensagem do admin
+    except:
+        pass
+    await ctx.reply(f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).", delete_after=10)
 
 @alojar.error
 async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        # Ephemeral = Só o utilizador vê a mensagem de erro
         await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
 
 # --- Comando de Deobfuscar (com verificação de canal) ---
@@ -164,6 +167,12 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     else:
         await ctx.reply("❌ uso: `.deobf` + anexo `.txt`/`.lua` **ou** `.deobf <url_raw>`", delete_after=5)
         return
+
+    # Apaga a mensagem do utilizador para não deixar o ficheiro/script no chat
+    try:
+        await ctx.message.delete()
+    except:
+        pass
 
     embed = discord.Embed(title="DropX Deobfuscator", description="**Ofuscador detetado:** Prometheus (WeAreDevs)\n\nClica no botão abaixo para desofuscar.", color=0x2B2D31)
     embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
