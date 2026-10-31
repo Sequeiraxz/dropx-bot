@@ -521,6 +521,25 @@ async def fetch_url(url: str):
     except Exception as e:
         return None, str(e)
 
+# --- Prometheus verification ---
+def looks_like_prometheus(code_text: str) -> bool:
+    score = 0
+    if "wearedevs.net/obfuscator" in code_text:
+        score += 4
+    if re.search(r'\[\[\s*v\d+\.\d+\.\d+\s+https?://', code_text):
+        score += 3
+    if re.search(r'return\s*\(function\s*\(\.\.\.\)\s*local\s+\w\s*=\s*\{', code_text):
+        score += 3
+    if re.search(r'local\s+o\s*=\s*\{\s*"(?:\\[0-9]{2,3}){6,}"', code_text):
+        score += 2
+    if "getfenv and getfenv() or _ENV" in code_text:
+        score += 2
+    if "bit32.rrotate" in code_text or "bit32.rshift" in code_text:
+        score += 1
+    if re.search(r"local\s+\w\s*=\s*\{(?:\s*'(?:\\[0-9]{2,3}){6,}'[;,]?\s*){5,}", code_text):
+        score += 2
+    return score >= 3
+
 # --- MoonSec V2 verification ---
 def looks_like_moonsec_v2(code_text: str) -> bool:
     score = 0
@@ -536,7 +555,7 @@ def looks_like_moonsec_v2(code_text: str) -> bool:
         score += 1
     return score >= 3
 
-# --- Prometheus button ---
+# --- Prometheus button (with verification) ---
 class PrometheusButton(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
@@ -552,6 +571,25 @@ class PrometheusButton(discord.ui.Button):
         if source is None:
             await interaction.response.send_message("Script not found.", ephemeral=True)
             return
+
+        code_text = source.decode("utf-8", "ignore")
+
+        if not looks_like_prometheus(code_text):
+            embed = discord.Embed(
+                title="Prometheus — Verification Failed",
+                description=(
+                    "This script **does not look like Prometheus/WeAreDevs**.\n\n"
+                    "Signs checked: `wearedevs.net/obfuscator`, `return (function(...)`, `bit32.rrotate`, etc.\n\n"
+                    "If you're sure it is Prometheus, the deobfuscator may still fail. "
+                    "Try the **MoonSec V2** button instead if it's MoonSec V2."
+                ),
+                color=0xE74C3C,
+            )
+            embed.set_author(name="Prometheus", icon_url=WEAREDEVS_ICON)
+            embed.set_footer(text="If you want to force it, contact the bot owner.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         self.view.stop()
         await interaction.response.edit_message(
             content="Deobfuscating with Prometheus... please wait.",
@@ -849,6 +887,11 @@ async def main():
     print(">>> MAIN STARTED", flush=True)
     print(">>> TOKEN set:", bool(TOKEN), flush=True)
     await start_web_server()
+    print(">>> WEB SERVER OK", flush=True)
+    await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
     print(">>> WEB SERVER OK", flush=True)
     await bot.start(TOKEN)
 
