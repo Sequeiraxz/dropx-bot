@@ -437,7 +437,7 @@ async def start_web_server():
     await site.start()
     print(f"Servidor web a correr na porta {port}")
 
-# --- Desofuscador (continuação) ---
+# --- Desofuscador ---
 async def run_deobf(source: bytes):
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, "input.lua")
@@ -471,12 +471,15 @@ async def fetch_url(url: str):
     except Exception as e:
         return None, str(e)
 
-# --- Botões e Comando .deobf ---
+# --- Botão Prometheus ---
 class PrometheusButton(discord.ui.Button):
     def __init__(self, enabled=True):
-        super().__init__(label="Prometheus", style=discord.ButtonStyle.secondary,
-                         emoji=discord.PartialEmoji(name="wearedevs", id=WEAREDEVS_EMOJI_ID),
-                         disabled=not enabled)
+        super().__init__(
+            label="Prometheus",
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="wearedevs", id=WEAREDEVS_EMOJI_ID),
+            disabled=not enabled,
+        )
 
     async def callback(self, interaction: discord.Interaction):
         source = getattr(self.view, "source", None)
@@ -487,7 +490,9 @@ class PrometheusButton(discord.ui.Button):
         self.view.stop()
         await interaction.response.edit_message(
             content="⏳ **DropX pode demorar um pouco a desofuscar. Por favor, aguarda...**",
-            embed=None, view=None)
+            embed=None,
+            view=None,
+        )
 
         result, err = await run_deobf(source)
 
@@ -501,140 +506,11 @@ class PrometheusButton(discord.ui.Button):
         final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
         await interaction.followup.send(
             content=f"✅ desofuscado — {len(final)} bytes",
-            file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"))
+            file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
+        )
 
 class DeobfView(discord.ui.View):
     def __init__(self, source: bytes, enabled=True):
         super().__init__(timeout=600)
         self.source = source
         self.add_item(PrometheusButton(enabled=enabled))
-
-# --- Comando .alojar ---
-@bot.command(name="alojar")
-@commands.has_permissions(administrator=True)
-async def alojar(ctx: commands.Context):
-    config["channel_id"] = ctx.channel.id
-    save_config(config)
-    try:
-        await ctx.message.delete()
-    except:
-        pass
-    await ctx.reply(
-        f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).",
-        delete_after=10)
-
-@alojar.error
-async def alojar_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
-
-# --- Helper para obter código (anexo ou URL) ---
-async def get_source(ctx: commands.Context, url: str = None):
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        if not att.filename.endswith((".txt", ".lua", ".luau")):
-            return None, "❌ anexo tem de ser `.txt`/`.lua`/`.luau`."
-        if att.size > 5 * 1024 * 1024:
-            return None, "❌ ficheiro > 5 MiB."
-        return await att.read(), ""
-    elif url:
-        source, err = await fetch_url(url.strip())
-        if source is None:
-            return None, f"❌ não consegui obter o URL: {err}"
-        if len(source) > 5 * 1024 * 1024:
-            return None, "❌ ficheiro > 5 MiB."
-        return source, ""
-    return None, "❌ uso: `.deobf` + anexo `.txt`/`.lua` **ou** `.deobf <url_raw>`"
-
-# --- Comando .deobf ---
-@bot.command(name="deobf")
-async def deobf(ctx: commands.Context, *, url: str = None):
-    if config["channel_id"] is None:
-        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
-        return
-    if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
-        return
-
-    source, err = await get_source(ctx, url)
-    if source is None:
-        await ctx.reply(err, delete_after=5)
-        return
-
-    try:
-        await ctx.message.delete()
-    except:
-        pass
-
-    code_text = source.decode("utf-8", "ignore")
-    results = detect(code_text)
-    top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
-    is_prometheus = (top_name == "Prometheus")
-
-    if is_prometheus:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica no botão abaixo para desofuscar."
-    else:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
-
-    embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
-    embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
-    await ctx.reply(embed=embed, view=DeobfView(source, enabled=is_prometheus))
-
-# --- NOVO Comando .detector ---
-@bot.command(name="detector")
-async def detector(ctx: commands.Context, *, url: str = None):
-    if config["channel_id"] is None:
-        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
-        return
-    if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
-        return
-
-    source, err = await get_source(ctx, url)
-    if source is None:
-        await ctx.reply(err.replace(".deobf", ".detector"), delete_after=5)
-        return
-
-    try:
-        await ctx.message.delete()
-    except:
-        pass
-
-    code_text = source.decode("utf-8", "ignore")
-    results = detect(code_text)
-
-    if not results or results[0][0] == "Custom / Unknown":
-        await ctx.reply("🔍 **Resultado:** `Custom / Unknown` (score 1/10)")
-        return
-
-    lines = []
-    for name, pct in results[:5]:
-        if pct <= 0:
-            continue
-        bar_len = int(round(pct / 10))
-        bar = "█" * bar_len + "░" * (10 - bar_len)
-        lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
-
-    top_name, top_pct = results[0]
-    embed = discord.Embed(
-        title="🔍 DropX Detector",
-        description=f"**Mais provável:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
-        color=0x2B2D31)
-    embed.set_footer(text=f"Tamanho analisado: {len(code_text)} caracteres")
-    await ctx.reply(embed=embed)
-
-# --- Eventos / Arranque ---
-@bot.event
-async def on_ready():
-    print(f"Bot ligado: {bot.user}")
-    try:
-        await bot.tree.sync()
-    except Exception as e:
-        print(f"Erro sync: {e}")
-
-async def main():
-    await start_web_server()
-    await bot.start(TOKEN)
-
-if __name__ == "__main__":
-    asyncio.run(main())
