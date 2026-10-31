@@ -3,11 +3,9 @@ import io
 import asyncio
 import tempfile
 import re
+import json
 import aiohttp
 import discord
-import urllib.request
-import tarfile
-import stat
 from discord.ext import commands
 from aiohttp import web
 
@@ -16,11 +14,25 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50o
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
 NODE = os.environ.get("NODE", "node")
-DEOBF_TIMEOUT = 600  # 10 minutos para ficheiros grandes
+DEOBF_TIMEOUT = 600
+CONFIG_FILE = "config.json"
 
 HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 WEAREDEVS_EMOJI_ID = 1565837351769481216
+
+# Carregar canal configurado
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"channel_id": None}
+
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f)
+
+config = load_config()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -84,17 +96,17 @@ class PrometheusButton(discord.ui.Button):
         if source is None:
             await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
             return
-        
-        # Avisar que pode demorar (para o Discord não cancelar)
-        await interaction.response.defer(thinking=True)
-        await interaction.followup.send("⏳ **DropX pode demorar um pouco a desofuscar ficheiros grandes. Por favor, aguarda...**", ephemeral=True)
-        
+
+        self.view.stop()
+        await interaction.response.edit_message(content="⏳ **DropX pode demorar um pouco a desofuscar. Por favor, aguarda...**", embed=None, view=None)
+
         result, err = await run_deobf(source)
+        
         if result is None:
-            await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=True)
+            await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=False)
             return
         if len(result) > 8 * 1024 * 1024:
-            await interaction.followup.send("❌ output > 8 MiB.", ephemeral=True)
+            await interaction.followup.send("❌ output > 8 MiB.", ephemeral=False)
             return
             
         final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
@@ -106,8 +118,32 @@ class DeobfView(discord.ui.View):
         self.source = source
         self.add_item(PrometheusButton())
 
+# --- Comando para Alojar o Bot no Canal ---
+@bot.command(name="alojar")
+@commands.has_permissions(administrator=True)
+async def alojar(ctx: commands.Context):
+    config["channel_id"] = ctx.channel.id
+    save_config(config)
+    await ctx.reply(f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).")
+
+@alojar.error
+async def alojar_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("❌ Apenas administradores podem usar este comando.")
+
+# --- Comando de Deobfuscar (com verificação de canal) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
+    # Verifica se o bot já foi alojado num canal
+    if config["channel_id"] is None:
+        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.")
+        return
+        
+    # Verifica se a mensagem foi enviada no canal correto
+    if ctx.channel.id != config["channel_id"]:
+        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.")
+        return
+
     if ctx.message.attachments:
         att = ctx.message.attachments[0]
         if not att.filename.endswith((".txt", ".lua", ".luau")):
@@ -141,7 +177,6 @@ async def on_ready():
     except Exception as e:
         print(f"Erro sync: {e}")
 
-# --- Arranque ---
 async def main():
     await start_web_server()
     await bot.start(TOKEN)
