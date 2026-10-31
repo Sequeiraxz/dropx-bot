@@ -16,6 +16,7 @@ from aiohttp import web
 TOKEN = os.environ.get("DISCORD_TOKEN")
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
+MOONSEC_V2_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moonsec-v2-deobfuscator")
 NODE = os.environ.get("NODE", "node")
 DEOBF_TIMEOUT = 600
 CONFIG_FILE = "config.json"
@@ -23,6 +24,8 @@ CONFIG_FILE = "config.json"
 HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 WEAREDEVS_EMOJI_ID = 1565837351769481216
+MOONSEC_EMOJI_ID = 1566041038852718692
+MOONSEC_ICON = f"https://cdn.discordapp.com/emojis/{MOONSEC_EMOJI_ID}.png"
 
 RAW_DOMAINS = [
     "https://pastebin.com/",
@@ -53,6 +56,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 bot.remove_command("help")
+
+_moonsec_lock = asyncio.Lock()
 
 SIGNATURES = {
     "Prometheus": [
@@ -432,193 +437,6 @@ def score_1_to_10(pct: float) -> int:
     return max(1, min(10, s))
 # =====================================================================
 # FIM DO DETECTOR
-# =====================================================================_DEFINITELY_OBF = [
-    re.compile(r'`[A-Za-z0-9+/]{10,}={0,2}`'),
-    re.compile(r'error\s*\(\s*`Tamper Detected'),
-    re.compile(r'lliilI1i'),
-    re.compile(r'Protected_by_MoonSecV2'),
-    re.compile(r'Protected By Hercules'),
-    re.compile(r'This file was protected using Lunr'),
-    re.compile(r'This file was protected using Luraph'),
-    re.compile(r'This file was generated using Luraph Obfuscator'),
-    re.compile(r'This script was generated using the MoonVeil'),
-    re.compile(r'\[\[77fuscator'),
-    re.compile(r'--ironbrew3:tm'),
-    re.compile(r'return\s+v15\s*\(\s*"LOL!'),
-    re.compile(r'[\u3480-\u34c0]{5,}'),
-    re.compile(r'\b[lI1i]{5,}\b'),
-    re.compile(r'All warfare is based on deception.*Sun Tzu'),
-    re.compile(r'"LPS\?[0-9A-Z]{30,}"'),
-    re.compile(r'0_[bBxX][0-9a-fA-F_]{6,}'),
-    re.compile(r'wearedevs\.net/obfuscator'),
-    re.compile(r'return\s*\(\s*function\s*\(\s*\.\.\.\s*\)\s*local\s+\w\s*=\s*\{\s*"(?:\\[0-9]{2,3}){6,}"'),
-
-
-_WEAREDEVS_SIGNALS = [
-    re.compile(r'wearedevs\.net/obfuscator'),
-    re.compile(r'\[\[\s*v\d+\.\d+\.\d+\s+https?://'),
-    re.compile(r'local\s+o\s*=\s*\{\s*"(?:\\[0-9]{2,3}){6,}"'),
-]
-
-def calc_entropy(data: str) -> float:
-    if not data: return 0.0
-    freq = Counter(data)
-    length = len(data)
-    return -sum((c / length) * math.log2(c / length) for c in freq.values())
-
-def stat_features(code: str) -> dict:
-    lines = code.splitlines()
-    total_chars = len(code)
-    if total_chars == 0: return {}
-    avg_line = (sum(len(l) for l in lines) / len(lines)) if lines else 0
-    long_lines = sum(1 for l in lines if len(l) > 500) / max(len(lines), 1)
-    hex_count = len(re.findall(r'0x[0-9a-fA-F]+', code))
-    num_esc = len(re.findall(r'\\[0-9]{2,3}', code))
-    ops = len(re.findall(r'[+\-*/%^&|]', code))
-    unicode_cnt = len(re.findall(r'[\u3480-\u34c0]{3,}', code))
-    backtick_strings = len(re.findall(r'`[^`]{6,}`', code))
-    il_names = len(re.findall(r'\b[lI1i]{4,}\b', code))
-    bin_literals = len(re.findall(r'0[Bb][01_]{4,}', code))
-    underscore_hex = len(re.findall(r'0_[bBxX][0-9a-fA-F_]{4,}', code))
-    dq_numesc_strings = len(re.findall(r'"(?:\\[0-9]{2,3}){6,}"', code))
-    return {
-        "entropy": calc_entropy(code), "avg_line_length": avg_line, "long_line_ratio": long_lines,
-        "hex_literal_density": hex_count / max(total_chars / 1000, 1), "numeric_escape_density": num_esc / max(total_chars / 1000, 1),
-        "operator_density": ops / max(total_chars / 1000, 1), "unicode_ident_count": unicode_cnt,
-        "backtick_string_count": backtick_strings, "il_name_count": il_names, "bin_literal_count": bin_literals,
-        "underscore_hex_count": underscore_hex, "dq_numesc_strings": dq_numesc_strings,
-    }
-
-def is_wearedevs(code: str) -> bool:
-    for pat in _WEAREDEVS_SIGNALS:
-        try:
-            if pat.search(code): return True
-        except: pass
-    return False
-
-def stat_bonus(obf_name: str, stats: dict, is_wad: bool = False) -> float:
-    bonus = 0.0
-    ent = stats.get("entropy", 0); nesc = stats.get("numeric_escape_density", 0); avg_line = stats.get("avg_line_length", 0)
-    long_line = stats.get("long_line_ratio", 0); unicode_cnt = stats.get("unicode_ident_count", 0); backtick_cnt = stats.get("backtick_string_count", 0)
-    il_cnt = stats.get("il_name_count", 0); bin_cnt = stats.get("bin_literal_count", 0); us_hex = stats.get("underscore_hex_count", 0); dq_nesc = stats.get("dq_numesc_strings", 0)
-
-    if obf_name == "Prometheus":
-        if nesc > 5: bonus += 10
-        if 4.5 < ent < 6.0: bonus += 5
-        if nesc > 15: bonus += 15
-        if is_wad: bonus -= 80
-        if dq_nesc > 10: bonus -= 40
-    elif obf_name == "WeAreDevs":
-        if nesc > 10: bonus += 15
-        if dq_nesc > 20: bonus += 25
-        if 4.0 < ent < 5.5: bonus += 8
-        if avg_line > 200: bonus += 10
-    elif obf_name == "MoonSec V2":
-        if unicode_cnt > 5: bonus += 20
-    elif obf_name == "MoonSec V3":
-        if avg_line > 300: bonus += 8
-        if ent > 5.5: bonus += 5
-    elif obf_name == "Luraph 14":
-        if long_line > 0.1: bonus += 8
-        if stats.get("hex_literal_density", 0) > 10: bonus += 6
-    elif obf_name == "Luraph 10":
-        if il_cnt > 10: bonus += 10
-        if ent > 4.5: bonus += 5
-    elif obf_name == "LightRay":
-        if bin_cnt > 20: bonus += 15
-        if us_hex > 10: bonus += 12
-        if avg_line > 1000: bonus += 10
-        if ent > 4.8: bonus += 5
-    elif obf_name == "LuaObfuscator VM":
-        if long_line > 0.5: bonus += 8
-    elif obf_name == "WynFuscator":
-        if avg_line > 500: bonus += 10
-        if ent > 5.0: bonus += 5
-    elif obf_name == "Hercules":
-        if avg_line > 100: bonus += 5
-    elif obf_name == "IronBrew":
-        if stats.get("operator_density", 0) > 20: bonus += 5
-    elif obf_name == "MoonVeil":
-        if avg_line > 200: bonus += 8
-        if ent > 5.0: bonus += 5
-    elif obf_name == "77fuscator":
-        if avg_line > 300: bonus += 8
-    elif obf_name == "Lunr":
-        if backtick_cnt > 10: bonus += 15
-        if il_cnt > 20: bonus += 10
-        if ent > 4.5: bonus += 5
-    elif obf_name == "25ms Obfuscator":
-        if nesc > 8: bonus += 12
-        if avg_line > 250: bonus += 10
-        if ent > 5.2: bonus += 6
-        if is_wad: bonus -= 60
-        if dq_nesc > 10: bonus -= 30
-    elif obf_name == "Unobfuscated":
-        if avg_line < 120: bonus += 10
-        if ent < 4.5: bonus += 8
-        if backtick_cnt > 5: bonus -= 30
-        if il_cnt > 10: bonus -= 25
-        if ent > 5.5: bonus -= 20
-        if avg_line > 400: bonus -= 15
-        if bin_cnt > 10: bonus -= 20
-        if us_hex > 5: bonus -= 20
-    return bonus
-
-def is_definitely_obfuscated(code: str) -> bool:
-    for pat in _DEFINITELY_OBF:
-        try:
-            if pat.search(code): return True
-        except: pass
-    return False
-
-def detect(code):
-    stats = stat_features(code)
-    raw_scores = {}
-    definitely_obf = is_definitely_obfuscated(code)
-    wad = is_wearedevs(code)
-
-    for obf_name, patterns in SIGNATURES.items():
-        score = 0.0
-        for weight, pattern in patterns:
-            try:
-                if pattern.search(code): score += weight
-            except: pass
-        score += stat_bonus(obf_name, stats, is_wad=wad)
-        if obf_name == "Unobfuscated" and definitely_obf: score = 0.0
-        raw_scores[obf_name] = max(score, 0.0)
-
-    sorted_scores = sorted(raw_scores.items(), key=lambda x: x[1], reverse=True)
-    top_name, top_score = sorted_scores[0]
-    second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0.0
-    total = sum(raw_scores.values())
-
-    if top_score <= 0 or top_score < 20:
-        return [("Custom / Unknown", 0.0)]
-
-    gap_ratio = top_score / max(second_score, 1)
-    percentages = []
-    for name, score in raw_scores.items():
-        if score <= 0: confidence = 0.0
-        elif name == top_name:
-            dominance = score / max(total, 1)
-            gap_bonus = min(gap_ratio / 3, 1.0)
-            strength = min(score / 120, 1.0)
-            confidence = (dominance * 55 + gap_bonus * 25 + strength * 20)
-        else:
-            relative = score / max(top_score, 1)
-            suppress = min(gap_ratio / 2, 1.0)
-            confidence = relative * 45 * (1 - suppress)
-        confidence = round(min(max(confidence, 0), 99.9), 1)
-        percentages.append((name, confidence))
-
-    percentages.sort(key=lambda x: x[1], reverse=True)
-    return percentages
-
-def score_1_to_10(pct: float) -> int:
-    s = int(round(pct / 10.0))
-    return max(1, min(10, s))
-# =====================================================================
-# FIM DO DETECTOR
 # =====================================================================
 # --- Servidor Web ---
 async def handle_ping(request):
@@ -634,7 +452,7 @@ async def start_web_server():
     await site.start()
     print(f"Servidor web a correr na porta {port}", flush=True)
 
-# --- Desofuscador ---
+# --- Desofuscador Prometheus ---
 async def run_deobf(source: bytes):
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, "input.lua")
@@ -658,6 +476,39 @@ async def run_deobf(source: bytes):
         with open(out_path, "rb") as f:
             return f.read(), ""
 
+# --- Desofuscador MoonSec V2 ---
+async def run_moonsec_v2(source: bytes):
+    async with _moonsec_lock:
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = os.path.join(tmp, "input.lua")
+            with open(in_path, "wb") as f:
+                f.write(source)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "python", "main.py", in_path,
+                    cwd=MOONSEC_V2_DIR,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                return None, "timeout (300s)"
+            except FileNotFoundError:
+                return None, "Python/main.py não encontrado"
+
+            out_path = os.path.join(MOONSEC_V2_DIR, "output.lua")
+            if proc.returncode != 0 or not os.path.exists(out_path):
+                msg = (stdout + stderr).decode("utf-8", "replace").strip()
+                return None, msg[-1200:] or "falhou sem output"
+
+            with open(out_path, "rb") as f:
+                result = f.read()
+            try:
+                os.remove(out_path)
+            except:
+                pass
+            return result, ""
+
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
         return None, "URL inválido"
@@ -678,6 +529,7 @@ class PrometheusButton(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             emoji=discord.PartialEmoji(name="wearedevs", id=WEAREDEVS_EMOJI_ID),
             disabled=not enabled,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -687,7 +539,7 @@ class PrometheusButton(discord.ui.Button):
             return
         self.view.stop()
         await interaction.response.edit_message(
-            content="⏳ **DropX pode demorar um pouco a desofuscar. Por favor, aguarda...**",
+            content="⏳ **A desofuscar com Prometheus... aguarda.**",
             embed=None, view=None,
         )
         result, err = await run_deobf(source)
@@ -703,11 +555,55 @@ class PrometheusButton(discord.ui.Button):
             file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
         )
 
+# --- Botão MoonSec V2 ---
+class MoonSecV2Button(discord.ui.Button):
+    def __init__(self, enabled=True):
+        super().__init__(
+            label="MoonSec V2",
+            style=discord.ButtonStyle.success,
+            emoji=discord.PartialEmoji(name="moonsec", id=MOONSEC_EMOJI_ID),
+            disabled=not enabled,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        source = getattr(self.view, "source", None)
+        if source is None:
+            await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
+            return
+        self.view.stop()
+        embed = discord.Embed(
+            title="DropX — MoonSec V2",
+            description="⏳ A desofuscar... pode demorar.",
+            color=0x2ECC71,
+        )
+        embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+
+        result, err = await run_moonsec_v2(source)
+        if result is None:
+            await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=False)
+            return
+        if len(result) > 8 * 1024 * 1024:
+            await interaction.followup.send("❌ output > 8 MiB.", ephemeral=False)
+            return
+        out_embed = discord.Embed(
+            title="DropX — MoonSec V2",
+            description=f"✅ Desofuscado — {len(result)} bytes",
+            color=0x2ECC71,
+        )
+        out_embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
+        await interaction.followup.send(
+            embed=out_embed,
+            file=discord.File(fp=io.BytesIO(result), filename="deobfuscated.lua"),
+        )
+
 class DeobfView(discord.ui.View):
-    def __init__(self, source: bytes, enabled=True):
+    def __init__(self, source: bytes, prometheus_enabled=True, moonsec_enabled=True):
         super().__init__(timeout=600)
         self.source = source
-        self.add_item(PrometheusButton(enabled=enabled))
+        self.add_item(PrometheusButton(enabled=prometheus_enabled))
+        self.add_item(MoonSecV2Button(enabled=moonsec_enabled))
 
 # --- Comando .alojar ---
 @bot.command(name="alojar")
@@ -743,7 +639,7 @@ async def get_source(ctx: commands.Context, url: str = None):
         return source, ""
     return None, "❌ uso: anexo `.txt`/`.lua` **ou** um URL raw."
 
-# --- Comando .deobf ---
+# --- Comando .deobf (Prometheus + MoonSec V2) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
     if config["channel_id"] is None:
@@ -759,14 +655,19 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     code_text = source.decode("utf-8", "ignore")
     results = detect(code_text)
     top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
-    is_prometheus = (top_name == "Prometheus")
+    is_prometheus = (top_name in ("Prometheus", "WeAreDevs"))
+    is_moonsec = (top_name == "MoonSec V2")
+
     if is_prometheus:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica no botão abaixo para desofuscar."
+        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica em **Prometheus** para desofuscar."
+    elif is_moonsec:
+        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica em **MoonSec V2** para desofuscar."
     else:
-        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
-    embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
-    embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
-    await ctx.reply(embed=embed, view=DeobfView(source, enabled=is_prometheus))
+        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nPodes tentar **Prometheus** ou **MoonSec V2** (pode falhar se não corresponder)."
+
+    embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
+    embed.set_footer(text="Escolhe o desofuscador abaixo.")
+    await ctx.reply(embed=embed, view=DeobfView(source, prometheus_enabled=True, moonsec_enabled=True))
 
 # --- Comando .detector ---
 @bot.command(name="detector")
@@ -882,14 +783,14 @@ async def help_cmd(ctx: commands.Context):
     )
     embed.add_field(name="`.alojar`", value="Host the bot in the current channel (admin only).", inline=False)
     embed.add_field(name="`.detector`", value="Detect the obfuscator of an attached `.lua`/`.txt` file or raw URL.", inline=False)
-    embed.add_field(name="`.deobf`", value="Deobfuscate a Prometheus/WeAreDevs script (attachment or URL).", inline=False)
+    embed.add_field(name="`.deobf`", value="Deobfuscate with Prometheus or MoonSec V2 (buttons).", inline=False)
     embed.add_field(name="`.get <url>`", value="Fetch a raw URL and show status + body (first 1k chars).", inline=False)
     embed.add_field(name="`.stats`", value="Show live bot stats (uptime, latency, servers).", inline=False)
     embed.add_field(name="`.help`", value="Show this message.", inline=False)
-    embed.set_footer(text="DropX • Prometheus / WeAreDevs deobfuscator")
+    embed.set_footer(text="DropX • Prometheus / MoonSec V2")
     await ctx.reply(embed=embed)
 
-# --- Handler de erros (diagnóstico) ---
+# --- Handler de erros ---
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
