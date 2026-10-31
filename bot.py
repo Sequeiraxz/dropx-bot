@@ -8,7 +8,6 @@ import aiohttp
 import discord
 from discord.ext import commands
 from aiohttp import web
-# from detector import detect, print_report
 
 # ⚠️ Usa a variável de ambiente do Render (DISCORD_TOKEN)
 TOKEN = os.environ.get("DISCORD_TOKEN", "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ")
@@ -37,6 +36,25 @@ config = load_config()
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
+
+# --- DETECTOR SIMPLIFICADO ---
+def detect_obfuscator(code: str) -> str:
+    # Luraph
+    if "Luraph Obfuscator" in code or "LPH_" in code: return "Luraph"
+    # MoonSec
+    if "MoonSec" in code or "Protected_by_MoonSecV2" in code: return "MoonSec"
+    # IronBrew
+    if "ironbrew3:tm" in code or "IronBrew" in code: return "IronBrew"
+    # WeAreDevs (Assinatura clássica)
+    if "wearedevs.net" in code or "WRD" in code: return "WeAreDevs"
+    # Prometheus
+    if "Prometheus" in code or "return (function(...)" in code: return "Prometheus"
+    # 77fuscator
+    if "77fuscator" in code: return "77fuscator"
+    # MoonVeil
+    if "MoonVeil" in code: return "MoonVeil"
+    
+    return "Custom / Unknown"
 
 # --- Servidor Web para o Render ---
 async def handle_ping(request):
@@ -135,7 +153,7 @@ async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
 
-# --- Comando de Deobfuscar (com verificação de canal e detector) ---
+# --- Comando de Deobfuscar ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
     if config["channel_id"] is None:
@@ -172,15 +190,15 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     except:
         pass
 
-    # --- TESTE TEMPORÁRIO SEM DETECTOR ---
-    top_name = "Prometheus"
-    top_pct = 100
-    is_prometheus = True
+    # Chama o detector simplificado
+    code_text = source.decode("utf-8", "ignore")
+    detected = detect_obfuscator(code_text)
+    is_prometheus = (detected == "Prometheus")
 
     if is_prometheus:
-        desc = f"**Ofuscador detetado:** Prometheus (WeAreDevs)\n**Confiança:** {top_pct}%\n\nClica no botão abaixo para desofuscar."
+        desc = f"**Ofuscador detetado:** {detected} (WeAreDevs)\n\nClica no botão abaixo para desofuscar."
     else:
-        desc = f"**Ofuscador detetado:** {top_name}\n**Confiança:** {top_pct}%\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
+        desc = f"**Ofuscador detetado:** {detected}\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
 
     embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
     embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
