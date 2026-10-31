@@ -7,17 +7,16 @@ import aiohttp
 import discord
 import urllib.request
 import tarfile
-import shutil
 import stat
 from discord.ext import commands
 from aiohttp import web
 
-# ⚠️ METE O TEU TOKEN AQUI
-TOKEN = "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ"
+# ⚠️ Usa a variável de ambiente do Render (DISCORD_TOKEN)
+TOKEN = os.environ.get("DISCORD_TOKEN", "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ")
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
 NODE = os.environ.get("NODE", "node")
-DEOBF_TIMEOUT = 120
+DEOBF_TIMEOUT = 600  # 10 minutos para ficheiros grandes
 
 HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
@@ -27,34 +26,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# --- Instalação automática do Node.js ---
-def setup_node():
-    node_dir = "./node-portable"
-    node_bin = os.path.join(node_dir, "bin", "node")
-    if os.path.exists(node_bin):
-        return  # Já está instalado
-    
-    print("A descarregar Node.js portátil...")
-    url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
-    tar_path = "node.tar.xz"
-    
-    try:
-        urllib.request.urlretrieve(url, tar_path)
-        os.makedirs(node_dir, exist_ok=True)
-        with tarfile.open(tar_path, "r:xz") as tar:
-            members = tar.getmembers()
-            for member in members:
-                parts = member.name.split("/", 1)
-                if len(parts) > 1 and parts[1]:
-                    member.name = parts[1]
-                    tar.extract(member, node_dir)
-        os.remove(tar_path)
-        os.chmod(node_bin, os.stat(node_bin).st_mode | stat.S_IEXEC)
-        print("Node.js instalado com sucesso!")
-    except Exception as e:
-        print(f"Erro ao instalar Node.js: {e}")
-
-# --- Servidor Web para a PhanomCloud ---
+# --- Servidor Web para o Render ---
 async def handle_ping(request):
     return web.Response(text="DropX Bot Online")
 
@@ -112,7 +84,11 @@ class PrometheusButton(discord.ui.Button):
         if source is None:
             await interaction.response.send_message("❌ script não encontrado.", ephemeral=True)
             return
-        await interaction.response.defer()
+        
+        # Avisar que pode demorar (para o Discord não cancelar)
+        await interaction.response.defer(thinking=True)
+        await interaction.followup.send("⏳ **DropX pode demorar um pouco a desofuscar ficheiros grandes. Por favor, aguarda...**", ephemeral=True)
+        
         result, err = await run_deobf(source)
         if result is None:
             await interaction.followup.send(f"❌ falhou:\n```\n{err}\n```", ephemeral=True)
@@ -120,12 +96,13 @@ class PrometheusButton(discord.ui.Button):
         if len(result) > 8 * 1024 * 1024:
             await interaction.followup.send("❌ output > 8 MiB.", ephemeral=True)
             return
+            
         final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
         await interaction.followup.send(content=f"✅ desofuscado — {len(final)} bytes", file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"))
 
 class DeobfView(discord.ui.View):
     def __init__(self, source: bytes):
-        super().__init__(timeout=300)
+        super().__init__(timeout=600)
         self.source = source
         self.add_item(PrometheusButton())
 
@@ -166,7 +143,6 @@ async def on_ready():
 
 # --- Arranque ---
 async def main():
-    setup_node() # <--- Instala o Node automaticamente antes de ligar o bot
     await start_web_server()
     await bot.start(TOKEN)
 
