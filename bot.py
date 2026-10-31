@@ -1,6 +1,3 @@
-Aqui tens o `bot.py` completo, já com o detector integrado. Podes copiar tudo e substituir no GitHub.
-
-```python
 import os
 import io
 import asyncio
@@ -11,7 +8,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from aiohttp import web
-from detector import detect, print_report
+# from detector import detect, print_report
 
 # ⚠️ Usa a variável de ambiente do Render (DISCORD_TOKEN)
 TOKEN = os.environ.get("DISCORD_TOKEN", "MTU2NTc3NDk0MjA4NjEwMzEyMg.GwcgxL.9d50odJ3Ujrf0nrIcToLXPFW64yhA1E7hPLJlQ")
@@ -175,14 +172,10 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     except:
         pass
 
-    try:
-        code_text = source.decode("utf-8", "ignore")
-        results = detect(code_text)
-        top_name, top_pct = results[0] if results else ("Custom / Unknown", 0)
-        is_prometheus = (top_name == "Prometheus")
-    except Exception:
-        top_name, top_pct = "Custom / Unknown", 0
-        is_prometheus = False
+    # --- TESTE TEMPORÁRIO SEM DETECTOR ---
+    top_name = "Prometheus"
+    top_pct = 100
+    is_prometheus = True
 
     if is_prometheus:
         desc = f"**Ofuscador detetado:** Prometheus (WeAreDevs)\n**Confiança:** {top_pct}%\n\nClica no botão abaixo para desofuscar."
@@ -207,4 +200,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
