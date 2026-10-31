@@ -452,7 +452,7 @@ def score_1_to_10(pct: float) -> int:
     re.compile(r'0_[bBxX][0-9a-fA-F_]{6,}'),
     re.compile(r'wearedevs\.net/obfuscator'),
     re.compile(r'return\s*\(\s*function\s*\(\s*\.\.\.\s*\)\s*local\s+\w\s*=\s*\{\s*"(?:\\[0-9]{2,3}){6,}"'),
-]
+
 
 _WEAREDEVS_SIGNALS = [
     re.compile(r'wearedevs\.net/obfuscator'),
