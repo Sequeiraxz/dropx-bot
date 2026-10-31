@@ -232,7 +232,6 @@ SIGNATURES = {
         (12, re.compile(r'script\.')),
     ],
 }
-
 _DEFINITELY_OBF = [
     re.compile(r'`[A-Za-z0-9+/]{10,}={0,2}`'),
     re.compile(r'error\s*\(\s*`Tamper Detected'),
@@ -421,7 +420,6 @@ def score_1_to_10(pct: float) -> int:
 # =====================================================================
 # FIM DO DETECTOR
 # =====================================================================
-
 # --- Servidor Web ---
 async def handle_ping(request):
     return web.Response(text="DropX Bot Online")
@@ -434,7 +432,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Servidor web a correr na porta {port}")
+    print(f"Servidor web a correr na porta {port}", flush=True)
 
 # --- Desofuscador ---
 async def run_deobf(source: bytes):
@@ -515,3 +513,126 @@ class DeobfView(discord.ui.View):
         super().__init__(timeout=600)
         self.source = source
         self.add_item(PrometheusButton(enabled=enabled))
+
+# --- Comando .alojar ---
+@bot.command(name="alojar")
+@commands.has_permissions(administrator=True)
+async def alojar(ctx: commands.Context):
+    config["channel_id"] = ctx.channel.id
+    save_config(config)
+    await ctx.reply(
+        f"✅ **Bot alojado com sucesso!**\nA partir de agora, o bot só vai responder a comandos neste canal ({ctx.channel.mention}).",
+        delete_after=10,
+    )
+
+@alojar.error
+async def alojar_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
+
+# --- Helper para obter código (anexo ou URL) ---
+async def get_source(ctx: commands.Context, url: str = None):
+    if ctx.message.attachments:
+        att = ctx.message.attachments[0]
+        if not att.filename.endswith((".txt", ".lua", ".luau")):
+            return None, "❌ anexo tem de ser `.txt`/`.lua`/`.luau`."
+        if att.size > 5 * 1024 * 1024:
+            return None, "❌ ficheiro > 5 MiB."
+        return await att.read(), ""
+    elif url:
+        source, err = await fetch_url(url.strip())
+        if source is None:
+            return None, f"❌ não consegui obter o URL: {err}"
+        if len(source) > 5 * 1024 * 1024:
+            return None, "❌ ficheiro > 5 MiB."
+        return source, ""
+    return None, "❌ uso: `.detector` + anexo `.txt`/`.lua` **ou** `.detector <url_raw>`"
+
+# --- Comando .deobf ---
+@bot.command(name="deobf")
+async def deobf(ctx: commands.Context, *, url: str = None):
+    if config["channel_id"] is None:
+        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
+        return
+    if ctx.channel.id != config["channel_id"]:
+        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
+        return
+
+    source, err = await get_source(ctx, url)
+    if source is None:
+        await ctx.reply(err, delete_after=5)
+        return
+
+    code_text = source.decode("utf-8", "ignore")
+    results = detect(code_text)
+    top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
+    is_prometheus = (top_name == "Prometheus")
+
+    if is_prometheus:
+        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClica no botão abaixo para desofuscar."
+    else:
+        desc = f"**Ofuscador detetado:** {top_name} ({score_1_to_10(top_pct)}/10)\n\n❌ **Este desofuscador ainda não está disponível neste bot.**"
+
+    embed = discord.Embed(title="DropX Detector & Deobfuscator", description=desc, color=0x2B2D31)
+    embed.set_author(name="Prometheus (WeAreDevs)", icon_url=WEAREDEVS_ICON)
+    await ctx.reply(embed=embed, view=DeobfView(source, enabled=is_prometheus))
+
+# --- Comando .detector ---
+@bot.command(name="detector")
+async def detector(ctx: commands.Context, *, url: str = None):
+    if config["channel_id"] is None:
+        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
+        return
+    if ctx.channel.id != config["channel_id"]:
+        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
+        return
+
+    source, err = await get_source(ctx, url)
+    if source is None:
+        await ctx.reply(err, delete_after=5)
+        return
+
+    code_text = source.decode("utf-8", "ignore")
+    results = detect(code_text)
+
+    if not results or results[0][0] == "Custom / Unknown":
+        await ctx.reply("🔍 **Resultado:** `Custom / Unknown` (score 1/10)")
+        return
+
+    lines = []
+    for name, pct in results[:5]:
+        if pct <= 0:
+            continue
+        bar_len = int(round(pct / 10))
+        bar = "█" * bar_len + "░" * (10 - bar_len)
+        lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
+
+    top_name, top_pct = results[0]
+    embed = discord.Embed(
+        title="🔍 DropX Detector",
+        description=f"**Mais provável:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
+        color=0x2B2D31,
+    )
+    embed.set_footer(text=f"Tamanho analisado: {len(code_text)} caracteres")
+    await ctx.reply(embed=embed)
+
+# --- Eventos / Arranque ---
+@bot.event
+async def on_ready():
+    print(f"Bot ligado: {bot.user}", flush=True)
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        print(f"Erro sync: {e}", flush=True)
+
+async def main():
+    print(">>> MAIN INICIOU", flush=True)
+    print(">>> TOKEN definido:", bool(TOKEN), flush=True)
+    print(">>> PORT:", os.environ.get("PORT"), flush=True)
+    await start_web_server()
+    print(">>> SERVIDOR WEB OK", flush=True)
+    print(">>> A LIGAR AO DISCORD...", flush=True)
+    await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
