@@ -21,7 +21,6 @@ HEADER = "Deobfuscate By DropX :)\n\n"
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 WEAREDEVS_EMOJI_ID = 1565837351769481216
 
-# Carregar canal configurado
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -129,40 +128,41 @@ async def alojar(ctx: commands.Context):
 @alojar.error
 async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("❌ Apenas administradores podem usar este comando.")
+        # Ephemeral = Só o utilizador vê a mensagem de erro
+        await ctx.reply("❌ Apenas administradores podem usar este comando.", delete_after=5)
 
 # --- Comando de Deobfuscar (com verificação de canal) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
     # Verifica se o bot já foi alojado num canal
     if config["channel_id"] is None:
-        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.")
+        await ctx.reply("❌ O bot ainda não foi alojado. Pede a um admin para usar `.alojar` neste canal.", delete_after=5)
         return
         
     # Verifica se a mensagem foi enviada no canal correto
     if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.")
+        await ctx.reply("❌ Este bot só pode ser usado no canal onde foi alojado.", delete_after=5)
         return
 
     if ctx.message.attachments:
         att = ctx.message.attachments[0]
         if not att.filename.endswith((".txt", ".lua", ".luau")):
-            await ctx.reply("❌ anexo tem de ser `.txt`/`.lua`/`.luau`.")
+            await ctx.reply("❌ anexo tem de ser `.txt`/`.lua`/`.luau`.", delete_after=5)
             return
         if att.size > 5 * 1024 * 1024:
-            await ctx.reply("❌ ficheiro > 5 MiB.")
+            await ctx.reply("❌ ficheiro > 5 MiB.", delete_after=5)
             return
         source = await att.read()
     elif url:
         source, err = await fetch_url(url.strip())
         if source is None:
-            await ctx.reply(f"❌ não consegui obter o URL: {err}")
+            await ctx.reply(f"❌ não consegui obter o URL: {err}", delete_after=5)
             return
         if len(source) > 5 * 1024 * 1024:
-            await ctx.reply("❌ ficheiro > 5 MiB.")
+            await ctx.reply("❌ ficheiro > 5 MiB.", delete_after=5)
             return
     else:
-        await ctx.reply("❌ uso: `.deobf` + anexo `.txt`/`.lua` **ou** `.deobf <url_raw>`")
+        await ctx.reply("❌ uso: `.deobf` + anexo `.txt`/`.lua` **ou** `.deobf <url_raw>`", delete_after=5)
         return
 
     embed = discord.Embed(title="DropX Deobfuscator", description="**Ofuscador detetado:** Prometheus (WeAreDevs)\n\nClica no botão abaixo para desofuscar.", color=0x2B2D31)
