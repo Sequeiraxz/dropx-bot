@@ -518,7 +518,7 @@ local function UseHookOp(Source : string, SourceFile : string?) : (boolean, stri
     end
 
     local OutPath = FileName .. "-unparsed.lua"
-    local ScriptPath = hookOp and "mods/hookOp.luau" or "mods/hookOpButNotReally.luau"
+    local ScriptPath = "mods/hookOpButNotReally.luau"
     local HookArgs = {
         FileName,
         OutPath,
