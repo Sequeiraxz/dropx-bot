@@ -38,8 +38,9 @@ local constantCollection, inf_loops
 local format = string.format
 
 local function readfile(path : string) : string?
-   assert(fs.isFile(path), "invalid argument #1 to 'readfile', file does not exist.")
-
+    assert(fs.isFile(path), "invalid argument #1 to 'readfile', file does not exist.")
+    return fs.readFile(path)
+end
     local handle = fs.open(path, "r");
     local content = fs.read(handle)
     fs.close(handle)
