@@ -824,7 +824,15 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
     except Exception as e:
         traceback.print_exc()
         await ctx.reply(f"❌ Error: `{e!r}`")
+
 async def main():
+    print(">>> MAIN STARTED", flush=True)
+    await start_web_server()
+    await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    
     print(">>> MAIN STARTED", flush=True)
     await start_web_server()
     await bot.start(TOKEN)
