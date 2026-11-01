@@ -579,7 +579,7 @@ async def dump_worker():
                     await message.remove_reaction("⏳", bot.user)
                     await message.add_reaction("✅")
         DUMP_QUEUE.task_done()
-       async def fetch_url(url: str):
+async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
         return None, "Invalid URL"
     try:
@@ -590,7 +590,6 @@ async def dump_worker():
                 return await r.read(), ""
     except Exception as e:
         return None, str(e)
-
 # --- Verificações ---
 def looks_like_prometheus(code):
     score = 0
