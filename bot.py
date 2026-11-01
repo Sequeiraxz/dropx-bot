@@ -523,68 +523,7 @@ async def run_luaobfuscator(source: bytes):
             if proc.returncode != 0: return None, stderr.decode("utf-8", "replace").strip()[-1200:] or f"exit code {proc.returncode}"
             return stdout, ""
 
-# --- Dumper 6vms ---
-DUMP_QUEUE = asyncio.Queue()
 
-async def dump_worker():
-    await bot.wait_until_ready()
-    while True:
-        job = await DUMP_QUEUE.get()
-        message, source, filename = job
-        try: await message.add_reaction("⏳")
-        except: pass
-        
-        try:
-            # Define os caminhos na raiz do projeto
-            in_path = "/opt/render/project/src/input.lua"
-            out_path = "/opt/render/project/src/out.lua"
-            
-            # Escreve o ficheiro que o Lune vai ler
-            with open(in_path, "wb") as f:
-                f.write(source)
-            
-            # Chama o Lune passando os caminhos como argumentos normais
-            proc = await asyncio.create_subprocess_exec(
-                "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
-                cwd="/opt/render/project/src",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-            
-            # Verifica se o ficheiro de saída foi criado
-            if proc.returncode != 0 or not os.path.exists(out_path):
-                err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
-                await message.reply(f"❌ **Failed**\n```\n{err}\n```")
-                await message.remove_reaction("⏳", bot.user)
-                await message.add_reaction("❌")
-            else:
-                with open(out_path, "rb") as f: result = f.read()
-                
-                if result.startswith(b"--err"):
-                    err = result[5:].decode("utf-8", "replace").strip()
-                    await message.reply(f"❌ **Engine error**\n```\n{err}\n```")
-                    await message.remove_reaction("⏳", bot.user)
-                    await message.add_reaction("❌")
-                else:
-                    out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
-                    if not out_name.endswith(".lua"): out_name += ".dump.lua"
-                    await message.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name))
-                    await message.remove_reaction("⏳", bot.user)
-                    await message.add_reaction("✅")
-                    
-        except asyncio.TimeoutError:
-            await message.reply("❌ **Skipped** — took over 120s")
-            await message.remove_reaction("⏳", bot.user)
-            await message.add_reaction("⏱️")
-        except Exception as e:
-            traceback.print_exc()
-            await message.reply(f"❌ **Error**: `{e!r}`")
-            await message.remove_reaction("⏳", bot.user)
-            await message.add_reaction("❌")
-            
-        DUMP_QUEUE.task_done()
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
         return None, "Invalid URL"
@@ -792,18 +731,109 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound): return
     try: await ctx.reply(f"Error: `{error!r}`", delete_after=10)
     except: pass
-
+        
+@bot.command(name="l")
+async def api_dump(ctx: commands.Context, *, url: str = None):
+    try:
+        source, err = await get_source(ctx, url)
+        if source is None: return await ctx.reply(err, delete_after=5)
+        
+        await ctx.message.add_reaction("⏳")
+        msg = await ctx.reply("⏳ **Processing via Relua API...**")
+        
+        payload = {
+            "filename": "script.lua",
+            "source": source.decode("utf-8", "ignore"),
+            "lua_version": "Lua51",
+            "pretty": True
+        }
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.post("https://relua.lua.cz/deobfuscate", json=payload, timeout=120) as r:
+                if r.status != 200:
+                    await msg.edit(content=f"❌ API Error: HTTP {r.status}")
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await ctx.message.add_reaction("❌")
+                    return
+                data = await r.json()
+                result = data.get("output")
+                
+        if not result:
+            await msg.edit(content="❌ Failed to deobfuscate.")
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            return
+            
+        await msg.delete()
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+        filename = "script.lua"
+        if ctx.message.attachments: filename = ctx.message.attachments[0].filename
+        out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
+        if not out_name.endswith(".lua"): out_name += ".dump.lua"
+        
+        await ctx.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result.encode("utf-8")), filename=out_name))
+        
+    except Exception as e:
+        traceback.print_exc()
+        await ctx.reply(f"❌ Error: `{e!r}`")
+        
 @bot.event
 async def on_ready():
     bot.launch_time = time.time()
     print(f"Bot online: {bot.user}", flush=True)
     try: await bot.tree.sync()
     except: pass
-
+@bot.command(name="l")
+async def api_dump(ctx: commands.Context, *, url: str = None):
+    try:
+        source, err = await get_source(ctx, url)
+        if source is None: return await ctx.reply(err, delete_after=5)
+        
+        await ctx.message.add_reaction("⏳")
+        msg = await ctx.reply("⏳ **Processing via Relua API...**")
+        
+        payload = {
+            "filename": "script.lua",
+            "source": source.decode("utf-8", "ignore"),
+            "lua_version": "Lua51",
+            "pretty": True
+        }
+        
+        async with aiohttp.ClientSession() as s:
+            async with s.post("https://relua.lua.cz/deobfuscate", json=payload, timeout=120) as r:
+                if r.status != 200:
+                    await msg.edit(content=f"❌ API Error: HTTP {r.status}")
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await ctx.message.add_reaction("❌")
+                    return
+                data = await r.json()
+                result = data.get("output")
+                
+        if not result:
+            await msg.edit(content="❌ Failed to deobfuscate.")
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            return
+            
+        await msg.delete()
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+        filename = "script.lua"
+        if ctx.message.attachments: filename = ctx.message.attachments[0].filename
+        out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
+        if not out_name.endswith(".lua"): out_name += ".dump.lua"
+        
+        await ctx.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result.encode("utf-8")), filename=out_name))
+        
+    except Exception as e:
+        traceback.print_exc()
+        await ctx.reply(f"❌ Error: `{e!r}`")
 async def main():
     print(">>> MAIN STARTED", flush=True)
     await start_web_server()
-    #asyncio.create_task(dump_worker())
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
