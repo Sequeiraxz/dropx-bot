@@ -7,6 +7,7 @@ import json
 import math
 import time
 import platform
+import traceback
 import aiohttp
 import discord
 from collections import Counter
@@ -17,6 +18,7 @@ TOKEN = os.environ.get("DISCORD_TOKEN")
 
 DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
 MOONSEC_V2_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moonsec-v2-deobfuscator")
+MOONVEIL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moonveil-deobf")
 NODE = os.environ.get("NODE", "node")
 DEOBF_TIMEOUT = 600
 CONFIG_FILE = "config.json"
@@ -26,6 +28,8 @@ WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128
 WEAREDEVS_EMOJI_ID = 1565837351769481216
 MOONSEC_EMOJI_ID = 1566041038852718692
 MOONSEC_ICON = f"https://cdn.discordapp.com/emojis/{MOONSEC_EMOJI_ID}.png"
+MOONVEIL_EMOJI_ID = 1566062539962323085
+MOONVEIL_ICON = f"https://cdn.discordapp.com/emojis/{MOONVEIL_EMOJI_ID}.png"
 
 RAW_DOMAINS = [
     "https://pastebin.com/",
@@ -58,6 +62,7 @@ bot = commands.Bot(command_prefix=".", intents=intents)
 bot.remove_command("help")
 
 _moonsec_lock = asyncio.Lock()
+_moonveil_lock = asyncio.Lock()
 
 SIGNATURES = {
     "Prometheus": [
@@ -202,7 +207,7 @@ SIGNATURES = {
         (25, re.compile(r'be=function\s*\(\w,\w+\)\s*local\s+\w+\s+local\s+\w+=3')),
         (25, re.compile(r'bd=function\s*\(\w\)\s*local\s+\w+,\w+,\w+,\w+,\w+,\w+,\w+\s+local\s+\w+=0')),
         (20, re.compile(r'bj=function\s*\(\s*\)\s*local\s+\w+,\w+\s+local\s+\w+=0')),
-        (20, re.compile(r'getfenv\s+or\s+function\s*\(\s*\)\s*return\s+_ENV\s+end')),
+        (20, re.compile(r'getfenv\s+or\s+function\s*\(\s*\)\s+return\s+_ENV\s+end')),
         (20, re.compile(r'bg,bh=nil')),
         (15, re.compile(r'q=2\^32-1')),
         (15, re.compile(r'bh=function\s*\(\w,\w\)\s*if\s+\w<0\s+then\s+return\s+bg\(')),
@@ -509,6 +514,34 @@ async def run_moonsec_v2(source: bytes):
                 pass
             return result, ""
 
+# --- MoonVeil deobfuscator ---
+async def run_moonveil(source: bytes):
+    async with _moonveil_lock:
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = os.path.join(tmp, "input.lua")
+            out_path = os.path.join(tmp, "recovered.lua")
+            with open(in_path, "wb") as f:
+                f.write(source)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "python", "-m", "moonveil", "deobfuscate", in_path, "-o", out_path, "--seconds", "120",
+                    cwd=MOONVEIL_DIR,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+            except asyncio.TimeoutError:
+                return None, "timeout (180s)"
+            except FileNotFoundError:
+                return None, "Python/moonveil not found"
+
+            if proc.returncode != 0 or not os.path.exists(out_path):
+                msg = (stdout + stderr).decode("utf-8", "replace").strip()
+                return None, msg[-1200:] or f"exit code {proc.returncode}"
+
+            with open(out_path, "rb") as f:
+                return f.read(), ""
+
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
         return None, "Invalid URL"
@@ -521,7 +554,7 @@ async def fetch_url(url: str):
     except Exception as e:
         return None, str(e)
 
-# --- Prometheus verification ---
+# --- Verification functions ---
 def looks_like_prometheus(code_text: str) -> bool:
     score = 0
     if "wearedevs.net/obfuscator" in code_text:
@@ -540,7 +573,6 @@ def looks_like_prometheus(code_text: str) -> bool:
         score += 2
     return score >= 3
 
-# --- MoonSec V2 verification ---
 def looks_like_moonsec_v2(code_text: str) -> bool:
     score = 0
     if "Protected_by_MoonSecV2" in code_text:
@@ -555,7 +587,21 @@ def looks_like_moonsec_v2(code_text: str) -> bool:
         score += 1
     return score >= 3
 
-# --- Prometheus button (with verification) ---
+def looks_like_moonveil(code_text: str) -> bool:
+    score = 0
+    if "MoonVeil" in code_text or "moonveil" in code_text:
+        score += 3
+    if "moonveil.cc" in code_text:
+        score += 3
+    if re.search(r'\[1\]\s*=\s*\{', code_text) and re.search(r'\[2\]\s*=\s*\w+\s*\(\s*\'#\'', code_text):
+        score += 3
+    if "getmetatable,bit32.bxor,pairs,type" in code_text.replace(" ", ""):
+        score += 2
+    if re.search(r'repeat\s+while\s+true\s+do', code_text):
+        score += 1
+    return score >= 3
+
+# --- Prometheus button ---
 class PrometheusButton(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
@@ -567,48 +613,52 @@ class PrometheusButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        source = getattr(self.view, "source", None)
-        if source is None:
-            await interaction.response.send_message("Script not found.", ephemeral=True)
-            return
-
-        code_text = source.decode("utf-8", "ignore")
-
-        if not looks_like_prometheus(code_text):
-            embed = discord.Embed(
-                title="Prometheus — Verification Failed",
-                description=(
-                    "This script **does not look like Prometheus/WeAreDevs**.\n\n"
-                    "Signs checked: `wearedevs.net/obfuscator`, `return (function(...)`, `bit32.rrotate`, etc.\n\n"
-                    "If you're sure it is Prometheus, the deobfuscator may still fail. "
-                    "Try the **MoonSec V2** button instead if it's MoonSec V2."
-                ),
-                color=0xE74C3C,
+        try:
+            source = getattr(self.view, "source", None)
+            if source is None:
+                await interaction.response.send_message("Script not found.", ephemeral=True)
+                return
+            code_text = source.decode("utf-8", "ignore")
+            if not looks_like_prometheus(code_text):
+                embed = discord.Embed(
+                    title="Prometheus — Verification Failed",
+                    description=(
+                        "This script **does not look like Prometheus/WeAreDevs**.\n\n"
+                        "Signs checked: `wearedevs.net/obfuscator`, `return (function(...)`, `bit32.rrotate`, etc.\n\n"
+                        "If you're sure it is Prometheus, the deobfuscator may still fail. "
+                        "Try the **MoonSec V2** or **MoonVeil** button instead."
+                    ),
+                    color=0xE74C3C,
+                )
+                embed.set_author(name="Prometheus", icon_url=WEAREDEVS_ICON)
+                embed.set_footer(text="Made by Heartless")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            self.view.stop()
+            await interaction.response.edit_message(
+                content="Deobfuscating with Prometheus... please wait.",
+                embed=None, view=None,
             )
-            embed.set_author(name="Prometheus", icon_url=WEAREDEVS_ICON)
-            embed.set_footer(text="If you want to force it, contact the bot owner.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+            result, err = await run_deobf(source)
+            if result is None:
+                await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
+                return
+            if len(result) > 8 * 1024 * 1024:
+                await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
+                return
+            final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
+            await interaction.followup.send(
+                content=f"Deobfuscated — {len(final)} bytes\nMade by Heartless",
+                file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"Error: `{e!r}`", ephemeral=True)
+            except Exception:
+                pass
 
-        self.view.stop()
-        await interaction.response.edit_message(
-            content="Deobfuscating with Prometheus... please wait.",
-            embed=None, view=None,
-        )
-        result, err = await run_deobf(source)
-        if result is None:
-            await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
-            return
-        if len(result) > 8 * 1024 * 1024:
-            await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
-            return
-        final = (HEADER + result.decode("utf-8", "replace")).encode("utf-8")
-        await interaction.followup.send(
-            content=f"Deobfuscated — {len(final)} bytes",
-            file=discord.File(fp=io.BytesIO(final), filename="deobfuscated.txt"),
-        )
-
-# --- MoonSec V2 button (with verification) ---
+# --- MoonSec V2 button ---
 class MoonSecV2Button(discord.ui.Button):
     def __init__(self, enabled=True):
         super().__init__(
@@ -620,78 +670,182 @@ class MoonSecV2Button(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        source = getattr(self.view, "source", None)
-        if source is None:
-            await interaction.response.send_message("Script not found.", ephemeral=True)
-            return
-
-        code_text = source.decode("utf-8", "ignore")
-
-        if not looks_like_moonsec_v2(code_text):
+        try:
+            source = getattr(self.view, "source", None)
+            if source is None:
+                await interaction.response.send_message("Script not found.", ephemeral=True)
+                return
+            code_text = source.decode("utf-8", "ignore")
+            if not looks_like_moonsec_v2(code_text):
+                embed = discord.Embed(
+                    title="MoonSec V2 — Verification Failed",
+                    description=(
+                        "This script **does not look like MoonSec V2**.\n\n"
+                        "Signs checked: `Protected_by_MoonSecV2`, unicode identifiers, `_msec`, etc.\n\n"
+                        "If you're sure it is MoonSec V2, the deobfuscator may still fail. "
+                        "Try the **Prometheus** or **MoonVeil** button instead."
+                    ),
+                    color=0xE74C3C,
+                )
+                embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
+                embed.set_footer(text="Made by Heartless")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            self.view.stop()
             embed = discord.Embed(
-                title="MoonSec V2 — Verification Failed",
-                description=(
-                    "This script **does not look like MoonSec V2**.\n\n"
-                    "Signs checked: `Protected_by_MoonSecV2`, unicode identifiers, `_msec`, etc.\n\n"
-                    "If you're sure it is MoonSec V2, the deobfuscator may still fail. "
-                    "Try the **Prometheus** button instead if it's Prometheus/WeAreDevs."
-                ),
-                color=0xE74C3C,
+                title="DropX — MoonSec V2",
+                description="Deobfuscating... this may take a while.",
+                color=0x2ECC71,
             )
             embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
-            embed.set_footer(text="If you want to force it, contact the bot owner.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+            embed.set_footer(text="Made by Heartless")
+            await interaction.response.edit_message(content=None, embed=embed, view=None)
+            result, err = await run_moonsec_v2(source)
+            if result is None:
+                await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
+                return
+            if len(result) > 8 * 1024 * 1024:
+                await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
+                return
+            out_embed = discord.Embed(
+                title="DropX — MoonSec V2",
+                description=f"Deobfuscated — {len(result)} bytes",
+                color=0x2ECC71,
+            )
+            out_embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
+            out_embed.set_footer(text="Made by Heartless")
+            await interaction.followup.send(
+                embed=out_embed,
+                file=discord.File(fp=io.BytesIO(result), filename="deobfuscated.lua"),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"Error: `{e!r}`", ephemeral=True)
+            except Exception:
+                pass
 
-        self.view.stop()
-        embed = discord.Embed(
-            title="DropX — MoonSec V2",
-            description="Deobfuscating... this may take a while.",
-            color=0x2ECC71,
+# --- MoonVeil button ---
+class MoonVeilButton(discord.ui.Button):
+    def __init__(self, enabled=True):
+        super().__init__(
+            label="MoonVeil",
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="moonveil", id=MOONVEIL_EMOJI_ID),
+            disabled=not enabled,
+            row=0,
         )
-        embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
-        await interaction.response.edit_message(content=None, embed=embed, view=None)
 
-        result, err = await run_moonsec_v2(source)
-        if result is None:
-            await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
-            return
-        if len(result) > 8 * 1024 * 1024:
-            await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
-            return
-        out_embed = discord.Embed(
-            title="DropX — MoonSec V2",
-            description=f"Deobfuscated — {len(result)} bytes",
-            color=0x2ECC71,
-        )
-        out_embed.set_author(name="MoonSec V2", icon_url=MOONSEC_ICON)
-        await interaction.followup.send(
-            embed=out_embed,
-            file=discord.File(fp=io.BytesIO(result), filename="deobfuscated.lua"),
-        )
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            source = getattr(self.view, "source", None)
+            if source is None:
+                await interaction.response.send_message("Script not found.", ephemeral=True)
+                return
+            code_text = source.decode("utf-8", "ignore")
+            if not looks_like_moonveil(code_text):
+                embed = discord.Embed(
+                    title="MoonVeil — Verification Failed",
+                    description=(
+                        "This script **does not look like MoonVeil**.\n\n"
+                        "Signs checked: `MoonVeil`, `moonveil.cc`, `[1] = {`, etc.\n\n"
+                        "If you're sure it is MoonVeil, the deobfuscator may still fail. "
+                        "Try the **Prometheus** or **MoonSec V2** button instead."
+                    ),
+                    color=0xE74C3C,
+                )
+                embed.set_footer(text="Made by Heartless")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            self.view.stop()
+            await interaction.response.edit_message(
+                content="Deobfuscating with MoonVeil... this may take a while.",
+                embed=None, view=None,
+            )
+            result, err = await run_moonveil(source)
+            if result is None:
+                try:
+                    j = json.loads(err)
+                except Exception:
+                    j = None
+                if j and j.get("status") == "unsupported":
+                    reason = j.get("reason", "unknown reason")
+                    embed = discord.Embed(
+                        title="MoonVeil — Unsupported",
+                        description=(
+                            "This script **is MoonVeil**, but the deobfuscator **does not support this configuration**.\n\n"
+                            f"**Reason:** `{reason}`\n\n"
+                            "The tool currently only supports one specific MoonVeil family (2.0.26). "
+                            "Newer or different configurations (e.g. 2.1.x) are not supported yet.\n\n"
+                            "Try the **Prometheus** or **MoonSec V2** button if it's one of those."
+                        ),
+                        color=0xE74C3C,
+                    )
+                    embed.set_footer(text="Made by Heartless")
+                    await interaction.followup.send(embed=embed)
+                    return
+                if j and j.get("status") == "decoded_partial":
+                    embed = discord.Embed(
+                        title="MoonVeil — Partial Decode",
+                        description=(
+                            "The script was **partially decoded** (constants resolved) but the CFG could not be fully structured.\n\n"
+                            "The deobfuscator refuses to output a source file when it can't guarantee structure. "
+                            "Try a different deobfuscator if available."
+                        ),
+                        color=0xE67E22,
+                    )
+                    embed.set_footer(text="Made by Heartless")
+                    await interaction.followup.send(embed=embed)
+                    return
+                await interaction.followup.send(f"Failed:\n```\n{err}\n```", ephemeral=False)
+                return
+            if len(result) > 8 * 1024 * 1024:
+                await interaction.followup.send("Output > 8 MiB.", ephemeral=False)
+                return
+            await interaction.followup.send(
+                content=f"Deobfuscated — {len(result)} bytes\nMade by Heartless",
+                file=discord.File(fp=io.BytesIO(result), filename="deobfuscated.lua"),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"Error: `{e!r}`", ephemeral=True)
+            except Exception:
+                pass
 
 class DeobfView(discord.ui.View):
-    def __init__(self, source: bytes, prometheus_enabled=True, moonsec_enabled=True):
+    def __init__(self, source: bytes, prometheus_enabled=True, moonsec_enabled=True, moonveil_enabled=True):
         super().__init__(timeout=600)
         self.source = source
         self.add_item(PrometheusButton(enabled=prometheus_enabled))
         self.add_item(MoonSecV2Button(enabled=moonsec_enabled))
+        self.add_item(MoonVeilButton(enabled=moonveil_enabled))
 
 # --- .alojar command ---
 @bot.command(name="alojar")
 @commands.has_permissions(administrator=True)
 async def alojar(ctx: commands.Context):
-    config["channel_id"] = ctx.channel.id
-    save_config(config)
-    await ctx.reply(
-        f"Bot hosted successfully. From now on, the bot will only respond in this channel ({ctx.channel.mention}).",
-        delete_after=10,
-    )
+    try:
+        config["channel_id"] = ctx.channel.id
+        save_config(config)
+        await ctx.reply(
+            f"Bot hosted successfully. From now on, the bot will only respond in this channel ({ctx.channel.mention}).",
+            delete_after=10,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await ctx.reply(f"Error: `{e!r}`", delete_after=10)
+        except Exception:
+            pass
 
 @alojar.error
 async def alojar_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("Only administrators can use this command.", delete_after=5)
+        try:
+            await ctx.reply("Only administrators can use this command.", delete_after=5)
+        except Exception:
+            pass
 
 # --- Helper to get source (attachment or URL) ---
 async def get_source(ctx: commands.Context, url: str = None):
@@ -711,68 +865,85 @@ async def get_source(ctx: commands.Context, url: str = None):
         return source, ""
     return None, "Usage: attach `.txt`/`.lua` **or** provide a raw URL."
 
-# --- .deobf (Prometheus + MoonSec V2) ---
+# --- .deobf (Prometheus + MoonSec V2 + MoonVeil) ---
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
-    if config["channel_id"] is None:
-        await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
-        return
-    if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
-        return
-    source, err = await get_source(ctx, url)
-    if source is None:
-        await ctx.reply(err, delete_after=5)
-        return
-    code_text = source.decode("utf-8", "ignore")
-    results = detect(code_text)
-    top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
-    is_prometheus = (top_name in ("Prometheus", "WeAreDevs"))
-    is_moonsec = (top_name == "MoonSec V2")
+    try:
+        if config["channel_id"] is None:
+            await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
+            return
+        if ctx.channel.id != config["channel_id"]:
+            await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
+            return
+        source, err = await get_source(ctx, url)
+        if source is None:
+            await ctx.reply(err, delete_after=5)
+            return
+        code_text = source.decode("utf-8", "ignore")
+        results = detect(code_text)
+        top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
+        is_prometheus = (top_name in ("Prometheus", "WeAreDevs"))
+        is_moonsec = (top_name == "MoonSec V2")
+        is_moonveil = (top_name == "MoonVeil")
 
-    if is_prometheus:
-        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **Prometheus** to deobfuscate."
-    elif is_moonsec:
-        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **MoonSec V2** to deobfuscate."
-    else:
-        desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nYou can try **Prometheus** or **MoonSec V2**."
+        if is_prometheus:
+            desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **Prometheus** to deobfuscate."
+        elif is_moonsec:
+            desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **MoonSec V2** to deobfuscate."
+        elif is_moonveil:
+            desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nClick **MoonVeil** to deobfuscate."
+        else:
+            desc = f"**Detected:** {top_name} ({score_1_to_10(top_pct)}/10)\n\nYou can try **Prometheus**, **MoonSec V2** or **MoonVeil**."
 
-    embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
-    embed.set_footer(text="Pick a deobfuscator below.")
-    await ctx.reply(embed=embed, view=DeobfView(source, prometheus_enabled=True, moonsec_enabled=True))
+        embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
+        embed.set_footer(text="Pick a deobfuscator below • Made by Heartless")
+        await ctx.reply(embed=embed, view=DeobfView(source, prometheus_enabled=True, moonsec_enabled=True, moonveil_enabled=True))
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await ctx.reply(f"Error: `{e!r}`", delete_after=10)
+        except Exception:
+            pass
 
 # --- .detector ---
 @bot.command(name="detector")
 async def detector(ctx: commands.Context, *, url: str = None):
-    if config["channel_id"] is None:
-        await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
-        return
-    if ctx.channel.id != config["channel_id"]:
-        await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
-        return
-    source, err = await get_source(ctx, url)
-    if source is None:
-        await ctx.reply(err, delete_after=5)
-        return
-    code_text = source.decode("utf-8", "ignore")
-    results = detect(code_text)
-    if not results or results[0][0] == "Custom / Unknown":
-        await ctx.reply("**Result:** `Custom / Unknown` (score 1/10)")
-        return
-    lines = []
-    for name, pct in results[:5]:
-        if pct <= 0: continue
-        bar_len = int(round(pct / 10))
-        bar = "█" * bar_len + "░" * (10 - bar_len)
-        lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
-    top_name, top_pct = results[0]
-    embed = discord.Embed(
-        title="DropX Detector",
-        description=f"**Most likely:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
-        color=0x2B2D31,
-    )
-    embed.set_footer(text=f"Analyzed size: {len(code_text)} characters")
-    await ctx.reply(embed=embed)
+    try:
+        if config["channel_id"] is None:
+            await ctx.reply("Bot is not hosted yet. Ask an admin to run `.alojar` in this channel.", delete_after=5)
+            return
+        if ctx.channel.id != config["channel_id"]:
+            await ctx.reply("This bot can only be used in the channel where it was hosted.", delete_after=5)
+            return
+        source, err = await get_source(ctx, url)
+        if source is None:
+            await ctx.reply(err, delete_after=5)
+            return
+        code_text = source.decode("utf-8", "ignore")
+        results = detect(code_text)
+        if not results or results[0][0] == "Custom / Unknown":
+            await ctx.reply("**Result:** `Custom / Unknown` (score 1/10)\nMade by Heartless")
+            return
+        lines = []
+        for name, pct in results[:5]:
+            if pct <= 0: continue
+            bar_len = int(round(pct / 10))
+            bar = "█" * bar_len + "░" * (10 - bar_len)
+            lines.append(f"**{name}** — {score_1_to_10(pct)}/10 `{bar}` ({pct}%)")
+        top_name, top_pct = results[0]
+        embed = discord.Embed(
+            title="DropX Detector",
+            description=f"**Most likely:** `{top_name}` (score {score_1_to_10(top_pct)}/10)\n\n" + "\n".join(lines),
+            color=0x2B2D31,
+        )
+        embed.set_footer(text=f"Analyzed {len(code_text)} chars • Made by Heartless")
+        await ctx.reply(embed=embed)
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await ctx.reply(f"Error: `{e!r}`", delete_after=10)
+        except Exception:
+            pass
 
 # --- .get ---
 async def asyncget(url: str, headers: dict = None, proxy=None):
@@ -787,93 +958,116 @@ async def asyncget(url: str, headers: dict = None, proxy=None):
 
 @bot.command(name="get")
 async def get(ctx: commands.Context, *, url: str = None):
-    print(f"[GET] url={url!r}", flush=True)
-    if not url:
-        await ctx.reply("Usage: `.get <url>`", delete_after=8)
-        return
-    url = url.strip()
-    if not re.match(r"^https?://", url):
-        await ctx.reply("Invalid URL (must start with http:// or https://).", delete_after=8)
-        return
-
-    headers = {"User-Agent": ROBLOX_UA, "Accept": "*/*"}
-    is_raw = any(url.startswith(d) for d in RAW_DOMAINS)
-    use_proxy = PROXY if (PROXY and not is_raw) else None
-
     try:
-        status, ctype, body = await asyncget(url, headers=headers, proxy=use_proxy)
-        print(f"[GET] status={status} len={len(body)}", flush=True)
+        print(f"[GET] url={url!r}", flush=True)
+        if not url:
+            await ctx.reply("Usage: `.get <url>`", delete_after=8)
+            return
+        url = url.strip()
+        if not re.match(r"^https?://", url):
+            await ctx.reply("Invalid URL (must start with http:// or https://).", delete_after=8)
+            return
+
+        headers = {"User-Agent": ROBLOX_UA, "Accept": "*/*"}
+        is_raw = any(url.startswith(d) for d in RAW_DOMAINS)
+        use_proxy = PROXY if (PROXY and not is_raw) else None
+
+        try:
+            status, ctype, body = await asyncget(url, headers=headers, proxy=use_proxy)
+            print(f"[GET] status={status} len={len(body)}", flush=True)
+        except Exception as e:
+            print(f"[GET] EXCEPTION: {e!r}", flush=True)
+            await ctx.reply(f"Request failed: `{e!r}`", delete_after=15)
+            return
+
+        truncated = body[:1000] + ("\n... [truncated]" if len(body) > 1000 else "")
+        embed = discord.Embed(title="GET Result", color=0x2ECC71 if status == 200 else 0xE74C3C)
+        embed.add_field(name="URL", value=f"`{url[:200]}`", inline=False)
+        embed.add_field(name="Status", value=str(status), inline=True)
+        embed.add_field(name="Type", value=ctype[:80], inline=True)
+        embed.add_field(name="Size", value=f"{len(body)} chars", inline=True)
+        embed.add_field(name="Body (first 1k)", value=f"```\n{truncated}\n```", inline=False)
+        if status == 403:
+            embed.set_footer(text="403 Forbidden • Made by Heartless")
+        else:
+            embed.set_footer(text="Made by Heartless")
+
+        if len(body) > 1000:
+            await ctx.reply(
+                embed=embed,
+                file=discord.File(fp=io.BytesIO(body.encode("utf-8", "replace")), filename="response.txt"),
+            )
+        else:
+            await ctx.reply(embed=embed)
     except Exception as e:
-        print(f"[GET] EXCEPTION: {e!r}", flush=True)
-        await ctx.reply(f"Request failed: `{e!r}`", delete_after=15)
-        return
-
-    truncated = body[:1000] + ("\n... [truncated]" if len(body) > 1000 else "")
-    embed = discord.Embed(title="GET Result", color=0x2ECC71 if status == 200 else 0xE74C3C)
-    embed.add_field(name="URL", value=f"`{url[:200]}`", inline=False)
-    embed.add_field(name="Status", value=str(status), inline=True)
-    embed.add_field(name="Type", value=ctype[:80], inline=True)
-    embed.add_field(name="Size", value=f"{len(body)} chars", inline=True)
-    embed.add_field(name="Body (first 1k)", value=f"```\n{truncated}\n```", inline=False)
-    if status == 403:
-        embed.set_footer(text="403 Forbidden — endpoint requires auth/headers this bot does not have.")
-
-    if len(body) > 1000:
-        await ctx.reply(
-            embed=embed,
-            file=discord.File(fp=io.BytesIO(body.encode("utf-8", "replace")), filename="response.txt"),
-        )
-    else:
-        await ctx.reply(embed=embed)
+        traceback.print_exc()
+        try:
+            await ctx.reply(f"Error: `{e!r}`", delete_after=10)
+        except Exception:
+            pass
 
 # --- .stats ---
 @bot.command(name="stats")
 async def stats(ctx: commands.Context):
-    uptime_sec = int(time.time() - getattr(bot, "launch_time", time.time()))
-    days, rem = divmod(uptime_sec, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, seconds = divmod(rem, 60)
-    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
-    embed = discord.Embed(title="DropX — Live Stats", color=0x2ECC71)
-    embed.add_field(name="Uptime", value=uptime_str, inline=True)
-    embed.add_field(name="Latency", value=f"{round(bot.latency*1000, 1)} ms", inline=True)
-    embed.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
-    embed.add_field(name="Users", value=str(sum(g.member_count or 0 for g in bot.guilds)), inline=True)
-    embed.add_field(name="Channels", value=str(sum(len(g.channels) for g in bot.guilds)), inline=True)
-    embed.add_field(name="Python", value=platform.python_version(), inline=True)
-    embed.add_field(name="discord.py", value=discord.__version__, inline=True)
-    embed.set_footer(text="Updated in real time")
-    await ctx.reply(embed=embed)
+    try:
+        uptime_sec = int(time.time() - getattr(bot, "launch_time", time.time()))
+        days, rem = divmod(uptime_sec, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, seconds = divmod(rem, 60)
+        uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+        embed = discord.Embed(title="DropX — Live Stats", color=0x2ECC71)
+        embed.add_field(name="Uptime", value=uptime_str, inline=True)
+        embed.add_field(name="Latency", value=f"{round(bot.latency*1000, 1)} ms", inline=True)
+        embed.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
+        embed.add_field(name="Users", value=str(sum(g.member_count or 0 for g in bot.guilds)), inline=True)
+        embed.add_field(name="Channels", value=str(sum(len(g.channels) for g in bot.guilds)), inline=True)
+        embed.add_field(name="Python", value=platform.python_version(), inline=True)
+        embed.add_field(name="discord.py", value=discord.__version__, inline=True)
+        embed.set_footer(text="Updated in real time • Made by Heartless")
+        await ctx.reply(embed=embed)
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await ctx.reply(f"Error: `{e!r}`", delete_after=10)
+        except Exception:
+            pass
 
 # --- .help ---
 @bot.command(name="help")
 async def help_cmd(ctx: commands.Context):
-    embed = discord.Embed(
-        title="DropX — Commands",
-        description="Prefix: `.`  •  Bot must be hosted in the channel.",
-        color=0x2ECC71,
-    )
-    embed.add_field(name="`.alojar`", value="Host the bot in the current channel (admin only).", inline=False)
-    embed.add_field(name="`.detector`", value="Detect the obfuscator of an attached `.lua`/`.txt` file or raw URL.", inline=False)
-    embed.add_field(name="`.deobf`", value="Deobfuscate with Prometheus or MoonSec V2 (buttons).", inline=False)
-    embed.add_field(name="`.get <url>`", value="Fetch a raw URL and show status + body (first 1k chars).", inline=False)
-    embed.add_field(name="`.stats`", value="Show live bot stats (uptime, latency, servers).", inline=False)
-    embed.add_field(name="`.help`", value="Show this message.", inline=False)
-    embed.set_footer(text="DropX • Prometheus / MoonSec V2")
-    await ctx.reply(embed=embed)
+    try:
+        embed = discord.Embed(
+            title="DropX — Commands",
+            description="Prefix: `.`  •  Bot must be hosted in the channel.",
+            color=0x2ECC71,
+        )
+        embed.add_field(name="`.alojar`", value="Host the bot in the current channel (admin only).", inline=False)
+        embed.add_field(name="`.detector`", value="Detect the obfuscator of an attached `.lua`/`.txt` file or raw URL.", inline=False)
+        embed.add_field(name="`.deobf`", value="Deobfuscate with Prometheus, MoonSec V2 or MoonVeil (buttons).", inline=False)
+        embed.add_field(name="`.get <url>`", value="Fetch a raw URL and show status + body (first 1k chars).", inline=False)
+        embed.add_field(name="`.stats`", value="Show live bot stats (uptime, latency, servers).", inline=False)
+        embed.add_field(name="`.help`", value="Show this message.", inline=False)
+        embed.set_footer(text="DropX • Prometheus / MoonSec V2 / MoonVeil • Made by Heartless")
+        await ctx.reply(embed=embed)
+    except Exception as e:
+        traceback.print_exc()
 
-# --- Error handler ---
+# --- Global error handlers (anti-crash) ---
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
-    print(f"[CMD ERROR] {ctx.command}: {error!r}", flush=True)
+    traceback.print_exc()
     try:
         await ctx.reply(f"Error in `{ctx.command}`:\n```\n{error!r}\n```", delete_after=20)
-    except Exception as e:
-        print(f"Failed to reply error: {e}", flush=True)
+    except Exception:
+        pass
 
-# --- Events / Startup ---
+@bot.event
+async def on_error(event, *args, **kwargs):
+    print(f"[EVENT ERROR] {event}", flush=True)
+    traceback.print_exc()
+
 @bot.event
 async def on_ready():
     bot.launch_time = time.time()
@@ -884,11 +1078,16 @@ async def on_ready():
         print(f"Sync error: {e}", flush=True)
 
 async def main():
-    print(">>> MAIN STARTED", flush=True)
-    print(">>> TOKEN set:", bool(TOKEN), flush=True)
-    await start_web_server()
-    print(">>> WEB SERVER OK", flush=True)
-    await bot.start(TOKEN)
+    try:
+        print(">>> MAIN STARTED", flush=True)
+        print(">>> TOKEN set:", bool(TOKEN), flush=True)
+        await start_web_server()
+        print(">>> WEB SERVER OK", flush=True)
+        await bot.start(TOKEN)
+    except Exception as e:
+        traceback.print_exc()
+        print(f">>> FATAL: {e!r}", flush=True)
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
