@@ -5878,10 +5878,13 @@ if Settings.ipt then --> Spawned instantly, for beta testing or whatever.
     return TimedDump(Settings.ipt or "input.lua");
 end
 
-while true do
-    local Input = stdio.readLine()
-    local Decoded = serde.decode("json", Input)
+   -- Em vez do while true, le o argumento que o Python manda
+local Input = process.args[1]
+local outPath = process.args[2]
 
-    Settings = Decoded.settings
-    TimedDump(Decoded.script, true)
+if Input and outPath then
+    local Code = fs.readFile(Input)
+    TimedDump(Code, true)
+else
+    print("Erro: Faltam argumentos")
 end
