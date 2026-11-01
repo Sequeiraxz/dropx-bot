@@ -531,7 +531,7 @@ local function UseHookOp(Source : string, SourceFile : string?) : (boolean, stri
 
     -- Prefer Lute for @std/syntax/parser; allow explicit override.
     local HookBin = process.env and process.env.HOOKOP_BIN
-    local UseLune = process.env and process.env.HOOKOP_USE_LUNE
+    local UseLune = true
     if not HookBin then
         if UseLune then
             HookBin = process.os == "windows" and "lune.exe" or "lune"
