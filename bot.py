@@ -803,7 +803,7 @@ async def on_ready():
 async def main():
     print(">>> MAIN STARTED", flush=True)
     await start_web_server()
-    asyncio.create_task(dump_worker())
+    #asyncio.create_task(dump_worker())
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
