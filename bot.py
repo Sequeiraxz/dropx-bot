@@ -539,7 +539,7 @@ async def dump_worker():
             
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "/opt/render/project/src/lune", "run", "main.luau", in_path, f"out={out_path}", 
+                    "/opt/render/project/src/lune", "run", "main.luau", f"ipt={in_path}", f"out={out_path}", 
                     cwd="/opt/render/project/src", 
                     stdout=asyncio.subprocess.PIPE, 
                     stderr=asyncio.subprocess.PIPE
