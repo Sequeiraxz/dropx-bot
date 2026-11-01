@@ -725,53 +725,6 @@ async def on_command_error(ctx, error):
     try: await ctx.reply(f"Error: `{error!r}`", delete_after=10)
     except: pass
         
-@bot.command(name="l")
-async def api_dump(ctx: commands.Context, *, url: str = None):
-    try:
-        source, err = await get_source(ctx, url)
-        if source is None: return await ctx.reply(err, delete_after=5)
-        
-        await ctx.message.add_reaction("⏳")
-        msg = await ctx.reply("⏳ **Processing via Relua API...**")
-        
-        payload = {
-            "filename": "script.lua",
-            "source": source.decode("utf-8", "ignore"),
-            "lua_version": "Lua51",
-            "pretty": True
-        }
-        
-        async with aiohttp.ClientSession() as s:
-            async with s.post("https://relua.lua.cz/deobfuscate", json=payload, timeout=120) as r:
-                if r.status != 200:
-                    await msg.edit(content=f"❌ API Error: HTTP {r.status}")
-                    await ctx.message.remove_reaction("⏳", bot.user)
-                    await ctx.message.add_reaction("❌")
-                    return
-                data = await r.json()
-                result = data.get("output")
-                
-        if not result:
-            await msg.edit(content="❌ Failed to deobfuscate.")
-            await ctx.message.remove_reaction("⏳", bot.user)
-            await ctx.message.add_reaction("❌")
-            return
-            
-        await msg.delete()
-        await ctx.message.remove_reaction("⏳", bot.user)
-        await ctx.message.add_reaction("✅")
-        
-        filename = "script.lua"
-        if ctx.message.attachments: filename = ctx.message.attachments[0].filename
-        out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
-        if not out_name.endswith(".lua"): out_name += ".dump.lua"
-        
-        await ctx.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result.encode("utf-8")), filename=out_name))
-        
-    except Exception as e:
-        traceback.print_exc()
-        await ctx.reply(f"❌ Error: `{e!r}`")
-        
 @bot.event
 async def on_ready():
     bot.launch_time = time.time()
