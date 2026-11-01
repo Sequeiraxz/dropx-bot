@@ -1,3 +1,4 @@
+local process = require("@lune/process")
 local luau = require("@lune/luau")
 local parser = { parse = function(code) return luau.parse(code) end, parsefile = function(path) return luau.parse(require("@lune/fs").readFile(path)) end }
 local fs = require("@lune/fs")
@@ -44,6 +45,8 @@ local function readfile(path : string) : string?
     fs.close(handle)
     return content
 end
+local path = process.args[1]
+local outPath = process.args[2]
 
 local maxNum, tab, visited, callId = 2^64, "    ", {}, nil;
 
@@ -765,8 +768,8 @@ print("Constant collection:",constantCollection)
 
 local output = {}
 
-local source = readfile(input)
-lines = splitLines(source)
+local source = readfile(path) -- MUDÁMOS DE 'input' PARA 'path'
+local lines = splitLines(source) -- Adicionámos o 'local' para não dar conflito
 
 local s = os.clock()
 local parsefn = parser.parse or parser.parsefile
@@ -776,4 +779,4 @@ end
 
 print("finished everything in",os.clock()-s,"seconds, file size:",#source / 1024,"kb.")
 
-writeFileCompat(out, table.concat(output, " "))
+writeFileCompat(outPath, table.concat(output, " ")) -- MUDÁMOS DE 'out' PARA 'outPath'
