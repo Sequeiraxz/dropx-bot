@@ -738,27 +738,35 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         if source is None: return await ctx.reply(err, delete_after=5)
         
         await ctx.message.add_reaction("⏳")
-        msg = await ctx.reply("⏳ **Processing via Relua API...**")
+        msg = await ctx.reply("⏳ **Dumping...**")
         
-        payload = {
-            "filename": "script.lua",
-            "source": source.decode("utf-8", "ignore"),
-            "lua_version": "Lua51",
-            "pretty": True
-        }
+        in_path = "/opt/render/project/src/input.lua"
+        out_path = "/opt/render/project/src/out.lua"
         
-        async with aiohttp.ClientSession() as s:
-            async with s.post("https://api.6vms.com/deobfuscate", json=payload, timeout=120) as r:
-                if r.status != 200:
-                    await msg.edit(content=f"❌ API Error: HTTP {r.status}")
-                    await ctx.message.remove_reaction("⏳", bot.user)
-                    await ctx.message.add_reaction("❌")
-                    return
-                data = await r.json()
-                result = data.get("output")
-                
-        if not result:
-            await msg.edit(content="❌ Failed to deobfuscate.")
+        with open(in_path, "wb") as f:
+            f.write(source)
+            
+        proc = await asyncio.create_subprocess_exec(
+            "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
+            cwd="/opt/render/project/src",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
+            await msg.edit(content=f"❌ **Failed**\n```\n{err}\n```")
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            return
+            
+        with open(out_path, "rb") as f: result = f.read()
+        
+        if result.startswith(b"--err"):
+            err = result[5:].decode("utf-8", "replace").strip()
+            await msg.edit(content=f"❌ **Engine error**\n```\n{err}\n```")
             await ctx.message.remove_reaction("⏳", bot.user)
             await ctx.message.add_reaction("❌")
             return
@@ -772,7 +780,7 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
         if not out_name.endswith(".lua"): out_name += ".dump.lua"
         
-        await ctx.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result.encode("utf-8")), filename=out_name))
+        await ctx.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name))
         
     except Exception as e:
         traceback.print_exc()
