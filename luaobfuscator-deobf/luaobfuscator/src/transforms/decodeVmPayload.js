@@ -4,7 +4,7 @@ import {
   expandSuperinstructionProto
 } from "../core/superinstructions.js";
 
-const OUTPUT_HEADER = "-- This file was deobfuscated by VX [ https://discord.gg/qa2fwcB7K ]";
+const OUTPUT_HEADER = "-- This file was deobfuscated by Dropx [ https://discord.gg/9NGYcfFez ]";
 
 class ByteReader {
   constructor(bytes) {
