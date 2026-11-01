@@ -535,17 +535,17 @@ async def dump_worker():
         except: pass
         
         try:
-            # Cria um ficheiro JSON em vez de enviar pelo terminal
-            payload = json.dumps({"script": source.decode("utf-8", "ignore"), "settings": {"ipt": None}})
-            json_path = "/opt/render/project/src/input.json"
+            # Define os caminhos na raiz do projeto
+            in_path = "/opt/render/project/src/input.lua"
+            out_path = "/opt/render/project/src/out.lua"
             
-            with open(json_path, "w", encoding="utf-8") as f:
-                f.write(payload)
+            # Escreve o ficheiro que o Lune vai ler
+            with open(in_path, "wb") as f:
+                f.write(source)
             
-            # Diz ao Lune para ler esse ficheiro usando o comando "cat" do Linux
-            # (O cat envia o conteudo do ficheiro para o stdin do Lune)
-            proc = await asyncio.create_subprocess_shell(
-                f"/opt/render/project/src/lune run main.luau < {json_path}",
+            # Chama o Lune passando os caminhos como argumentos
+            proc = await asyncio.create_subprocess_exec(
+                "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
                 cwd="/opt/render/project/src",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
@@ -553,15 +553,15 @@ async def dump_worker():
             
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             
-            out_path = "/opt/render/project/src/out.lua"
-            
+            # Verifica se o ficheiro de saída foi criado
             if proc.returncode != 0 or not os.path.exists(out_path):
-                err = stderr.decode("utf-8", "replace")[-800:] if stderr else stdout.decode("utf-8", "replace")[-800:]
+                err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
                 await message.reply(f"❌ **Failed**\n```\n{err}\n```")
                 await message.remove_reaction("⏳", bot.user)
                 await message.add_reaction("❌")
             else:
                 with open(out_path, "rb") as f: result = f.read()
+                
                 if result.startswith(b"--err"):
                     err = result[5:].decode("utf-8", "replace").strip()
                     await message.reply(f"❌ **Engine error**\n```\n{err}\n```")
@@ -573,6 +573,7 @@ async def dump_worker():
                     await message.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name))
                     await message.remove_reaction("⏳", bot.user)
                     await message.add_reaction("✅")
+                    
         except asyncio.TimeoutError:
             await message.reply("❌ **Skipped** — took over 120s")
             await message.remove_reaction("⏳", bot.user)
@@ -582,6 +583,7 @@ async def dump_worker():
             await message.reply(f"❌ **Error**: `{e!r}`")
             await message.remove_reaction("⏳", bot.user)
             await message.add_reaction("❌")
+            
         DUMP_QUEUE.task_done()
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
