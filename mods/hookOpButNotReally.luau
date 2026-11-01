@@ -4,16 +4,7 @@ local parser = { parse = function(code) return luau.parse(code) end, parsefile =
 local fs = require("@lune/fs")
 
 local function writeFileCompat(path, content)
-    if fs.writeFile then return fs.writeFile(path, content) end
-    if fs.writestringtofile then return fs.writestringtofile(path, content) end
-    if fs.writefile then return fs.writefile(path, content) end
-    if fs.open and fs.write and fs.close then
-        local handle = fs.open(path, "w")
-        fs.write(handle, content)
-        fs.close(handle)
-        return
-    end
-    error("No fs write function available")
+    fs.writeFile(path, content)
 end
 
 local function splitLines(text)
