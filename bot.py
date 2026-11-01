@@ -746,10 +746,10 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         with open(in_path, "wb") as f:
             f.write(source)
             
-              # A MÁGICA: Corre o hookOpButNotReally diretamente!
+                # A MÁGICA: Corre o hookOpButNotReally diretamente!
         proc = await asyncio.create_subprocess_exec(
-            "/opt/render/project/src/lune", "run", "mods/hookOpButNotReally.luau", in_path, out_path, "0", "1", "50000000",
-            cwd="/opt/render/project/src",
+            "/opt/render/project/src/lune", "run", "hookOpButNotReally.luau", in_path, out_path, "0", "1", "50000000",
+            cwd="/opt/render/project/src/mods",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
