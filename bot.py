@@ -673,13 +673,6 @@ async def alojar(ctx: commands.Context):
     save_config(config)
     await ctx.reply("Bot hosted successfully.", delete_after=10)
 
-@bot.command(name="l")
-async def dump_cmd(ctx: commands.Context, *, url: str = None):
-    source, err = await get_source(ctx, url)
-    if source is None: return await ctx.reply(err, delete_after=5)
-    await ctx.message.add_reaction("🕓")
-    filename = ctx.message.attachments[0].filename if ctx.message.attachments else "script.lua"
-    await DUMP_QUEUE.put((ctx.message, source, filename))
 
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
