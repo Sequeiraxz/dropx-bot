@@ -536,27 +536,50 @@ async def dump_worker():
             in_path = os.path.join(tmp, "input.lua")
             out_path = os.path.join(tmp, "out.lua")
             with open(in_path, "wb") as f: f.write(source)
+            
             try:
-                proc = await asyncio.create_subprocess_exec("/opt/render/project/src/lune", "run", "main.luau", in_path, f"out={out_path}", cwd="/opt/render/project/src", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                proc = await asyncio.create_subprocess_exec(
+                    "/opt/render/project/src/lune", "run", "main.luau", in_path, f"out={out_path}", 
+                    cwd="/opt/render/project/src", 
+                    stdout=asyncio.subprocess.PIPE, 
+                    stderr=asyncio.subprocess.PIPE
+                )
+                # LÊ A RESPOSTA DO LUNE AQUI (A LINHA QUE FALTAVA)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                
             except asyncio.TimeoutError:
-                await message.reply("❌ **Skipped** — took over 120s"); await message.remove_reaction("⏳", bot.user); await message.add_reaction("⏱️"); DUMP_QUEUE.task_done(); continue
+                await message.reply("❌ **Skipped** — took over 120s")
+                await message.remove_reaction("⏳", bot.user)
+                await message.add_reaction("⏱️")
+                DUMP_QUEUE.task_done()
+                continue
             except FileNotFoundError:
-                await message.reply("❌ **Failed** — Lune is not installed on the server."); await message.remove_reaction("⏳", bot.user); await message.add_reaction("❌"); DUMP_QUEUE.task_done(); continue
+                await message.reply("❌ **Failed** — Lune is not installed on the server.")
+                await message.remove_reaction("⏳", bot.user)
+                await message.add_reaction("❌")
+                DUMP_QUEUE.task_done()
+                continue
+
             if proc.returncode != 0 or not os.path.exists(out_path):
-                err = stderr.decode("utf-8", "replace")[-800:]
-                await message.reply(f"❌ **Failed**\n```\n{err}\n```"); await message.remove_reaction("⏳", bot.user); await message.add_reaction("❌")
+                err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
+                await message.reply(f"❌ **Failed**\n```\n{err}\n```")
+                await message.remove_reaction("⏳", bot.user)
+                await message.add_reaction("❌")
             else:
                 with open(out_path, "rb") as f: result = f.read()
                 if result.startswith(b"--err"):
                     err = result[5:].decode("utf-8", "replace").strip()
-                    await message.reply(f"❌ **Engine error**\n```\n{err}\n```"); await message.remove_reaction("⏳", bot.user); await message.add_reaction("❌")
+                    await message.reply(f"❌ **Engine error**\n```\n{err}\n```")
+                    await message.remove_reaction("⏳", bot.user)
+                    await message.add_reaction("❌")
                 else:
                     out_name = filename.replace(".lua", ".dump.lua").replace(".txt", ".dump.lua")
                     if not out_name.endswith(".lua"): out_name += ".dump.lua"
-                    await message.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name)); await message.remove_reaction("⏳", bot.user); await message.add_reaction("✅")
+                    await message.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name))
+                    await message.remove_reaction("⏳", bot.user)
+                    await message.add_reaction("✅")
         DUMP_QUEUE.task_done()
-
-async def fetch_url(url: str):
+        async def fetch_url(url: str):
     if not re.match(r"^https?://", url): return None, "Invalid URL"
     try:
         async with aiohttp.ClientSession() as s:
