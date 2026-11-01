@@ -833,6 +833,7 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     
+   async def main():
     print(">>> MAIN STARTED", flush=True)
     await start_web_server()
     await bot.start(TOKEN)
