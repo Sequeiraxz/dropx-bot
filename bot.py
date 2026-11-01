@@ -533,36 +533,27 @@ async def dump_worker():
         message, source, filename = job
         try: await message.add_reaction("⏳")
         except: pass
-        with tempfile.TemporaryDirectory() as tmp:
-            in_path = os.path.join(tmp, "input.lua")
-            out_path = os.path.join(tmp, "out.lua")
-            with open(in_path, "wb") as f: f.write(source)
+        
+        try:
+            # Em vez de ficheiros, enviamos o JSON diretamente pelo terminal!
+            payload = json.dumps({"script": source.decode("utf-8", "ignore"), "settings": {"ipt": None}})
             
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "/opt/render/project/src/lune", "run", "main.luau", f"ipt={in_path}", f"out={out_path}", 
-                    cwd="/opt/render/project/src", 
-                    stdout=asyncio.subprocess.PIPE, 
-                    stderr=asyncio.subprocess.PIPE
-                )
-                # LÊ A RESPOSTA DO LUNE AQUI (A LINHA QUE FALTAVA)
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                
-            except asyncio.TimeoutError:
-                await message.reply("❌ **Skipped** — took over 120s")
-                await message.remove_reaction("⏳", bot.user)
-                await message.add_reaction("⏱️")
-                DUMP_QUEUE.task_done()
-                continue
-            except FileNotFoundError:
-                await message.reply("❌ **Failed** — Lune is not installed on the server.")
-                await message.remove_reaction("⏳", bot.user)
-                await message.add_reaction("❌")
-                DUMP_QUEUE.task_done()
-                continue
-
+            proc = await asyncio.create_subprocess_exec(
+                "/opt/render/project/src/lune", "run", "main.luau",
+                cwd="/opt/render/project/src",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # O Lune recebe o código aqui e devolve o resultado
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input=payload.encode() + b"\n"), timeout=120)
+            
+            # O Lune escreve o resultado num ficheiro (out.lua), vamos lê-lo.
+            out_path = "/opt/render/project/src/out.lua"
+            
             if proc.returncode != 0 or not os.path.exists(out_path):
-                err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
+                err = stderr.decode("utf-8", "replace")[-800:] if stderr else stdout.decode("utf-8", "replace")[-800:]
                 await message.reply(f"❌ **Failed**\n```\n{err}\n```")
                 await message.remove_reaction("⏳", bot.user)
                 await message.add_reaction("❌")
@@ -579,6 +570,15 @@ async def dump_worker():
                     await message.reply(content=f"✅ **Dumped {filename}** • Made by Heartless", file=discord.File(fp=io.BytesIO(result), filename=out_name))
                     await message.remove_reaction("⏳", bot.user)
                     await message.add_reaction("✅")
+        except asyncio.TimeoutError:
+            await message.reply("❌ **Skipped** — took over 120s")
+            await message.remove_reaction("⏳", bot.user)
+            await message.add_reaction("⏱️")
+        except Exception as e:
+            traceback.print_exc()
+            await message.reply(f"❌ **Error**: `{e!r}`")
+            await message.remove_reaction("⏳", bot.user)
+            await message.add_reaction("❌")
         DUMP_QUEUE.task_done()
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
