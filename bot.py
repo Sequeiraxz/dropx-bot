@@ -579,14 +579,17 @@ async def dump_worker():
                     await message.remove_reaction("⏳", bot.user)
                     await message.add_reaction("✅")
         DUMP_QUEUE.task_done()
-        async def fetch_url(url: str):
-    if not re.match(r"^https?://", url): return None, "Invalid URL"
+       async def fetch_url(url: str):
+    if not re.match(r"^https?://", url):
+        return None, "Invalid URL"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
-                if r.status != 200: return None, f"HTTP {r.status}"
+                if r.status != 200:
+                    return None, f"HTTP {r.status}"
                 return await r.read(), ""
-    except Exception as e: return None, str(e)
+    except Exception as e:
+        return None, str(e)
 
 # --- Verificações ---
 def looks_like_prometheus(code):
