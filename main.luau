@@ -280,7 +280,7 @@ for index, arg in process.args do
     end
 end
 
-local hookOp = Settings.hookOp
+local hookOp = false
 
 DONT_DELETE_FILES = DONT_DELETE_FILES or Settings.dont_delete
 CallId = DONT_DELETE_FILES and "" or CallId
@@ -530,7 +530,7 @@ local function UseHookOp(Source : string, SourceFile : string?) : (boolean, stri
     }
 
     -- Prefer Lute for @std/syntax/parser; allow explicit override.
-    local HookBin = process.env and process.env.HOOKOP_BIN
+   local HookBin = "/opt/render/project/src/lune"
     local UseLune = true
     if not HookBin then
         if UseLune then
@@ -5884,7 +5884,12 @@ local outPath = process.args[2]
 
 if Input and outPath then
     local Code = fs.readFile(Input)
-    TimedDump(Code, true)
+    Settings.out = outPath
+    Settings.ipt = Input
+    Settings.version = nil
+    
+    -- Chama o motor diretamente
+    return TimedDump(Input);
 else
     print("Erro: Faltam argumentos")
 end
