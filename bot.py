@@ -543,7 +543,7 @@ async def dump_worker():
             with open(in_path, "wb") as f:
                 f.write(source)
             
-            # Chama o Lune passando os caminhos como argumentos
+            # Chama o Lune passando os caminhos como argumentos normais
             proc = await asyncio.create_subprocess_exec(
                 "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
                 cwd="/opt/render/project/src",
