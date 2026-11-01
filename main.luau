@@ -534,7 +534,7 @@ local function UseHookOp(Source : string, SourceFile : string?) : (boolean, stri
     local UseLune = true
     if not HookBin then
         if UseLune then
-            HookBin = process.os == "windows" and "lune.exe" or "./lune"
+            HookBin = process.os == "windows" and "lune.exe" or "/opt/render/project/src/lune"
         else
             HookBin = process.os == "windows" and "lute.exe" or "lute"
         end
