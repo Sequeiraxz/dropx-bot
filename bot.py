@@ -748,7 +748,7 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         }
         
         async with aiohttp.ClientSession() as s:
-            async with s.post("https://relua.lua.cz/deobfuscate", json=payload, timeout=120) as r:
+            async with s.post("https://api.6vms.com/deobfuscate", json=payload, timeout=120) as r:
                 if r.status != 200:
                     await msg.edit(content=f"❌ API Error: HTTP {r.status}")
                     await ctx.message.remove_reaction("⏳", bot.user)
