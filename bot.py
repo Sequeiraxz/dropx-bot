@@ -535,21 +535,24 @@ async def dump_worker():
         except: pass
         
         try:
-            # Em vez de ficheiros, enviamos o JSON diretamente pelo terminal!
+            # Cria um ficheiro JSON em vez de enviar pelo terminal
             payload = json.dumps({"script": source.decode("utf-8", "ignore"), "settings": {"ipt": None}})
+            json_path = "/opt/render/project/src/input.json"
             
-            proc = await asyncio.create_subprocess_exec(
-                "/opt/render/project/src/lune", "run", "main.luau",
+            with open(json_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+            
+            # Diz ao Lune para ler esse ficheiro usando o comando "cat" do Linux
+            # (O cat envia o conteudo do ficheiro para o stdin do Lune)
+            proc = await asyncio.create_subprocess_shell(
+                f"/opt/render/project/src/lune run main.luau < {json_path}",
                 cwd="/opt/render/project/src",
-                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
             
-            # O Lune recebe o código aqui e devolve o resultado
-            stdout, stderr = await asyncio.wait_for(proc.communicate(input=payload.encode() + b"\n"), timeout=120)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             
-            # O Lune escreve o resultado num ficheiro (out.lua), vamos lê-lo.
             out_path = "/opt/render/project/src/out.lua"
             
             if proc.returncode != 0 or not os.path.exists(out_path):
