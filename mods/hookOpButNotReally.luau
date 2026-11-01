@@ -1,5 +1,6 @@
-local parser = require("@std/syntax/parser")
-local fs = require("@std/fs")
+local luau = require("@lune/luau")
+local parser = { parse = function(code) return luau.parse(code) end, parsefile = function(path) return luau.parse(require("@lune/fs").readFile(path)) end }
+local fs = require("@lune/fs")
 
 local function writeFileCompat(path, content)
     if fs.writeFile then return fs.writeFile(path, content) end
