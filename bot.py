@@ -537,7 +537,7 @@ async def dump_worker():
             out_path = os.path.join(tmp, "out.lua")
             with open(in_path, "wb") as f: f.write(source)
             try:
-                proc = await asyncio.create_subprocess_exec("./lune", "run", "main.luau", in_path, f"out={out_path}", cwd=os.path.dirname(os.path.abspath(__file__)), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                proc = await asyncio.create_subprocess_exec("/opt/render/project/src/lune", "run", "main.luau", in_path, f"out={out_path}", cwd=os.path.dirname(os.path.abspath(__file__)), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             except asyncio.TimeoutError:
                 await message.reply("❌ **Skipped** — took over 120s"); await message.remove_reaction("⏳", bot.user); await message.add_reaction("⏱️"); DUMP_QUEUE.task_done(); continue
