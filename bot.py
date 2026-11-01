@@ -462,10 +462,11 @@ async def start_web_server():
 
 # --- Desofuscadores ---
 async def run_deobf(source: bytes):
-  with tempfile.TemporaryDirectory() as tmp:
-    in_path = "/opt/render/project/src/input.lua"
-    out_path = "/opt/render/project/src/out.lua"
-        with open(in_path, "wb") as f: f.write(source)
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = "/opt/render/project/src/input.lua"
+        out_path = "/opt/render/project/src/out.lua"
+        with open(in_path, "wb") as f:
+            f.write(source)
         try:
             proc = await asyncio.create_subprocess_exec(NODE, "bin/pdeobf.js", in_path, "-o", out_path, cwd=DEOBF_DIR, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=DEOBF_TIMEOUT)
