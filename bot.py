@@ -420,8 +420,6 @@ async def get_source(ctx: commands.Context, url: str = None):
 async def alojar(ctx: commands.Context):
     config["channel_id"] = ctx.channel.id
     save_config(config)
-    try: await ctx.message.delete()
-    except: pass
     await ctx.reply("Bot hosted successfully in this channel.", delete_after=10)
 
 @bot.command(name="deobf")
@@ -433,8 +431,6 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     source, err = await get_source(ctx, url)
     if source is None:
         return await ctx.reply(err, delete_after=5)
-    try: await ctx.message.delete()
-    except: pass
     results = detect(source.decode("utf-8", "ignore"))
     top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
     is_prometheus = top_name in ("Prometheus", "WeAreDevs")
@@ -458,8 +454,6 @@ async def detector(ctx: commands.Context, *, url: str = None):
     source, err = await get_source(ctx, url)
     if source is None:
         return await ctx.reply(err)
-    try: await ctx.message.delete()
-    except: pass
     results = detect(source.decode("utf-8", "ignore"))
     lines = [f"**{n}** — {score_1_to_10(p)}/10" for n, p in results[:5] if p > 0]
     if not lines:
