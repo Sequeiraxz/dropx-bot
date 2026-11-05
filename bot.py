@@ -746,7 +746,7 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         with open(in_path, "wb") as f:
             f.write(source)
             
-               proc = await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
             cwd="/opt/render/project/src",
             stdout=asyncio.subprocess.PIPE,
