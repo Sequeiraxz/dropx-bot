@@ -2684,7 +2684,11 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
     end
 
     local function HookLibrary(Path : string, Extra : { [string]: (any) }?)
-        local Library : { [string]: any } = table.clone(TrueEnv[Path]);
+                local Source = TrueEnv[Path]
+        if typeof(Source) ~= "table" then
+            return Source --> não é uma biblioteca (ex: `vector` como função), deixa como está
+        end
+        local Library : { [string]: any } = table.clone(Source)
         
         local New = {}
         if Extra then
