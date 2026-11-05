@@ -5655,7 +5655,7 @@ end
 local function TimedDump(File : string, RawContent : boolean?)
     Settings.out = Settings.out or "out.lua"
 
-    local Code : string = RawContent and File or fs.readFile("./" .. File);
+    local Code : string = RawContent and File or fs.readFile(File)
     local Source = Code;
 
     local HookFile = if RawContent then nil else File --> file hookOp reads from; nil = write Code to a temp
@@ -5820,8 +5820,17 @@ local function TimedDump(File : string, RawContent : boolean?)
     process.exit(0);
 end
 
-if Settings.ipt then --> Spawned instantly, for beta testing or whatever.
-    return TimedDump(Settings.ipt or "input.lua");
+local Input = process.args[1]
+local outPath = process.args[2]
+
+if Input and outPath then
+    Settings.out = outPath
+    Settings.ipt = Input
+    return TimedDump(Input)
+elseif Settings.ipt then
+    return TimedDump(Settings.ipt)
+else
+    print("Erro: Faltam argumentos")
 end
 
    -- Em vez do while true, le o argumento que o Python manda
