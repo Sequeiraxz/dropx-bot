@@ -3293,9 +3293,15 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
             local Properties : { [string]: any } = InstanceData.properties
             local Callbacks : { [string] : any } = InstanceData.callbacks or {}
 
-            local imsocute:P = IsSpied and {
-                Name = Spy(Index("Name", Variable))
-            } or Instance.new(Class);
+                       local imsocute:P
+            if IsSpied then
+                imsocute = {
+                    Name = Spy(Index("Name", Variable))
+                }
+            else
+                local ok, inst = pcall(Instance.new, Class)
+                imsocute = if ok then inst else { Name = Class }
+            end
 
             local MethodHooksSelf = MethodsHooks[Class] or MethodsHooks["*"]
 
