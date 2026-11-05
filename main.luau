@@ -514,48 +514,7 @@ local function UseHookOp(Source : string, SourceFile : string?) : (boolean, stri
     return true, Source
 end
 
-    local OutPath = FileName .. "-unparsed.lua"
-    local ScriptPath = "mods/hookOpButNotReally.luau"
-    local HookArgs = {
-        FileName,
-        OutPath,
-        CallId,
-        --        Obfuscator == "Luraph" and "0" or Settings.constants and "1" or "0",
-        Settings.constants and "1" or "0",
-        Settings.inf_loops and "1" or "0",
-        tostring(WHILE_LIMIT),
-    }
-
-    -- Prefer Lute for @std/syntax/parser; allow explicit override.
-   local HookBin = "/opt/render/project/src/lune"
-    local UseLune = true
-    if not HookBin then
-        if UseLune then
-            HookBin = process.os == "windows" and "lune.exe" or "/opt/render/project/src/lune"
-        else
-            HookBin = process.os == "windows" and "lute.exe" or "lute"
-        end
-    end
-
-    local Args = {}
-    if UseLune then
-        Args = { "run", ScriptPath, unpack(HookArgs) }
-    else
-        Args = { ScriptPath, unpack(HookArgs) }
-    end
-
-    local POut = process.exec(HookBin, Args)
-
-    if POut and POut.exitCode and POut.exitCode ~= 0 then
-        local errMsg = POut.stderr and #POut.stderr > 0 and POut.stderr or `hookOp exited with code {POut.exitCode}`
-        return false, `--err{errMsg}`
-    end
-
-    if FileName ~= SourceFile then
-        fs.removeFile(FileName)
-    end
-
-    
+   
 local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
     --> Environment logs the given file & outputs the code
 
