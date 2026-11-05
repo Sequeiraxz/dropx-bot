@@ -4,7 +4,7 @@
 local DONT_DELETE_FILES = false
 local DONE_PROCESSING = false
 local NON_ENGLISH = "[\0-\31\189-\255{}]"
-local WHILE_LIMIT = 1_500_000
+local WHILE_LIMIT = 50_000_000
 local MAIN_THREAD = coroutine.running()
 
 local TypesLib = require("./mods/types")
@@ -81,6 +81,85 @@ local AliasToName = {
     int = "number"
 }
 local FunctionHooks = {} :: FunctionHooks
+
+--! apidump + class/member tables (ported from mods/aspect.luau) for authoritative member resolution
+local class_members = {}
+local class_superclass = {}
+local function load_apidump()
+	local candidates = { "core/io/apidump.json", "../core/io/apidump.json", "../../core/io/apidump.json" }
+	for _, path in ipairs(candidates) do
+		local ok, content = pcall(fs.readFile, path)
+		if ok and content then
+			local ok2, dump = pcall(serde.decode, "json", content)
+			if ok2 and dump then
+				return dump
+			end
+		end
+	end
+	return { Classes = {} }
+end
+local api_dump = load_apidump()
+for _, class_data in ipairs(api_dump.Classes) do
+	local className = class_data.Name
+	class_superclass[className] = class_data.Superclass
+	local members = {}
+	for _, member in ipairs(class_data.Members) do
+		local mtype = member.MemberType
+		local mname = member.Name
+		local is_readonly = false
+		if member.Tags then
+			for _, tag in ipairs(member.Tags) do
+				if tag == "ReadOnly" then
+					is_readonly = true
+					break
+				end
+			end
+		end
+		members[mname] = { Type = mtype, ReadOnly = is_readonly, ValueType = member.ValueType, ReturnType = member.ReturnType }
+	end
+	class_members[className] = members
+end
+
+local class_members_all = {}
+local class_members_lower = {}
+local function class_get_member_all(class, name)
+	local cached = class_members_all[class]
+	if not cached then
+		cached = {}
+		local super = class
+		while super do
+			local members = class_members[super]
+			if members then
+				for k, v in next, members do
+					if not cached[k] then cached[k] = v end
+				end
+			end
+			super = class_superclass[super]
+		end
+		class_members_all[class] = cached
+	end
+	return cached[name]
+end
+
+local function ResolveMemberName(Class, key)
+	if type(key) ~= "string" then return key end
+	local members = Class and class_members_all[Class]
+	if members then
+		local lower_map = class_members_lower[Class]
+		if not lower_map then
+			lower_map = {}
+			for name in next, members do lower_map[name:lower()] = name end
+			class_members_lower[Class] = lower_map
+		end
+		local canonical = lower_map[key:lower()]
+		if canonical then return canonical end
+	end
+	local Prefix = key:sub(1, 1)
+	if IsLowerCase(Prefix:byte()) then
+		return Prefix:upper() .. key:sub(2)
+	end
+	return key
+end
 local Lengths = {} :: { [Spied]: number }
 local Illegal = {
     ["for"] = true,
@@ -589,6 +668,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
         RandomStrings = true,
         package = true,
         inf = true, --> uuuuuuuuh wearedevs
+        io = true,
     }
     local Indexes = {}
     local SecureEnv = {} :: Environment
@@ -1154,7 +1234,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                 )
 
                 if LuaTypes[Type] and Type ~= "table" and Cached then
-                    error(`attempt to index {Type} with '{Key}'`)
+                    return
                 end
                 
                 if not DontSet then
@@ -1216,7 +1296,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                 end
 
                 if LuaTypes[Type] and Type ~= "table" and Type ~= "string" then
-                    error(`attempt to index {Type} with '{Key}'`)
+                    return nil
                 end
 
                 if Cached and not DontCache then
@@ -2362,7 +2442,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                 )
 
                 if TypeMar == "Instance" or TypeShi == "Instance" then
-                    error(`attempt to compare {TypeMar} {Symbol} {TypeShi}`)
+                    return Spy(Var, false);
                 end
 
                 local Success, Val = pcall(GetValue, ShesEvenCuter, OrIsShe)
@@ -2813,20 +2893,52 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
         local Gets = 0;
         local urlCache = {} :: { [string]: string };
 
+        local function isJnkie(target : string) : boolean
+            if type(target) ~= "string" then return false end
+            local low = target:lower()
+            if low:find("jnkie", 1, true) then return true end
+            return not not target:match("^[A-Za-z0-9_%-]{6,}$")
+        end
+
+        local function fetchJnkie(target : string) : string?
+            if not isJnkie(target) then return nil end
+            local tmp = (Settings.out or "out.lua") .. ".jnkie.tmp"
+            local pys = { process.os == "windows" and "python.exe" or "python", "python3" }
+            local scripts = { "jnkie.py", "../jnkie.py" }
+            for _, py in ipairs(pys) do
+                for _, script in ipairs(scripts) do
+                    local p = process.exec(py, { script, target, tmp })
+                    if p and p.exitCode == 0 then
+                        local ok, data = pcall(fs.readFile, tmp)
+                        pcall(fs.removeFile, tmp)
+                        if ok and type(data) == "string" and #data > 0 then
+                            return data
+                        end
+                    end
+                    pcall(fs.removeFile, tmp)
+                end
+            end
+            return nil
+        end
+
         function httpGet(url : string) : string?
             local cached = urlCache[url]
             if cached then return cached end
             if not Settings.isPremium then return end
 
-            local out = process.exec("node", {
-	            "./request.js",
-	            url
-            })
+            local result = isJnkie(url) and fetchJnkie(url)
 
-            local result = out.stdout
-            local success = not out.stderr:find("Unable to fetch", 0, true)
+            if not result then
+                local out = process.exec("node", {
+                    "./request.js",
+                    url
+                })
 
-            if success and result then
+                local success = not out.stderr:find("Unable to fetch", 0, true)
+                result = success and out.stdout or nil
+            end
+
+            if result then
                 urlCache[url] = result;
                 return result;
             end
@@ -2840,8 +2952,8 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
 
             Gets += 1
             Url = GetInternalValue(Url)
-            if Gets <= AllowedGetRequests and typeof(Url) == "string" then -- re-checking UrlType incase it's just a spied table
-                insert(AllowedUrlsInTheEnd, Url)
+            if typeof(Url) == "string" then -- re-checking UrlType incase it's just a spied table
+                insert(AllowedUrlsInTheEnd, { Url = Url, Method = "GET" })
 
                 local result = httpGet(Url)
                 if result then SetInternalValue(Self.var, result) end
@@ -2876,6 +2988,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                 GetClientId = function(Self) return SafeValue(Self.var, SharedGlobals.HWID) end
             },
             HttpService = {
+                GetAsync = HttpGet,
                 JSONEncode = function(Self : VariableData, Data : any)
                     Data = GetInternalValue(Data)
 
@@ -3257,10 +3370,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                     assert(Key, "invalid argument #2 (string expected, got nil)")
 
                     local Oldest = Key
-                    local Prefix = Key:sub(1, 1)
-                    if IsLowerCase(Prefix:byte()) then --> Fixes issues where stuff are still accessible like .getService, this automatically converts to .GetService, .name -> Name, .placeId -> PlaceId
-                        Key = Prefix:upper() .. Key:sub(2)
-                    end
+                    Key = ResolveMemberName(Class, Key) -- authoritative apidump member names when available; falls back to casing heuristic
 
                     if Callbacks[Key] then
                         error(`{Key} is a callback member of {Class}; you can only set the callback value, get is not available`)
@@ -3413,6 +3523,7 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
                     return Spied
                 end,
                 __newindex = function(Self, Key, Value)
+                    Key = ResolveMemberName(Class, Key)
                     Define(
                         Ast.Index(Ast.Variable(Variable), ToAST(Key)),
                         ToAST(Value),
@@ -5045,6 +5156,22 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
 
                     local ExecType = IsExecutor(Key)
 
+                    -- Hide lune-specific modules from _G to bypass DTC
+                    if Key == "process" then
+                        return setmetatable({}, {
+                            __index = function() return nil end,
+                            __newindex = function() end,
+                            __tostring = function() return "" end,
+                        })
+                    end
+
+                    local EnvValue = EnvValues[Key];
+                    if EnvValue then
+                        return SafeValue(Var, EnvValue[1])
+                    elseif not ExecType and not TrueEnv[Key] then
+                        return SafeValue(Var, nil);
+                    end
+
                     if (SpyExecOnly and (typeof(Key) == "string" and not ExecType)) or TrueEnv[Key] or Nil[Key] or ForceNil[Key] then
                         return SafeValue(Var, nil);
                     end
@@ -5140,7 +5267,9 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
         GetInternalValue = GetInternalValue,
         Globals = SharedGlobals,
         GetMetatable = GetMetatable,
-        GetVar = GetVar
+        GetVar = GetVar,
+        AllowedUrlsInTheEnd = AllowedUrlsInTheEnd,
+        SpiedToInstance = SpiedToInstance
     })
 
     for funcName, func in next, ExploitLib.funcs do
@@ -5176,6 +5305,11 @@ local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
             return SafeValue(Key, nil)
         elseif ForceNil[Key] or Type == "nil" then
             return nil;
+        end
+
+        if not ExecType and not TrueEnv[Key] then
+            ForceNil[Key] = true
+            return nil
         end
 
         if IterFuncs[Key] then
@@ -5651,7 +5785,65 @@ local function TimedDump(File : string, RawContent : boolean?)
 
     AllowedGetRequests += if Source:find(":HttpGet(", 0, true) then 1 else 0
 
-    local AST = EnvLog(Loaded, 0)
+    local AST, UsedHook
+    local OkEnv, EnvErr = pcall(function()
+        AST, UsedHook = EnvLog(Loaded, 0), true
+    end)
+    if not OkEnv then
+        warn("decompile runtime error (recovered, partial output may be empty):", EnvErr)
+        AST = AST or Ast.new()
+        UsedHook = false
+    end
+
+    local function AstQuality(ast)
+        local total = #ast.data.statements
+        if total < 3 then return total end
+        local meaningful = 0
+        for _, stmt in next, ast.data.statements do
+            if stmt.kind ~= "comment" and stmt.kind ~= "nonoptionalcomment" then
+                meaningful += 1
+            end
+        end
+        return meaningful
+    end
+
+    if AstQuality(AST) < 3 and not IsBytecode and not RawContent then
+        local RawCode = Source or Code
+        local RawCompiled, RawLoaded
+        local RawOk, RawErr = pcall(function()
+            RawCompiled = compile(RawCode, { optimizationLevel = 2 })
+            RawLoaded = loadstring(RawCompiled, { debugName = TraceId .. "_raw" })
+        end)
+        if RawOk then
+            print("retrying with .r (raw code)")
+            local RawAST = EnvLog(RawLoaded, 0)
+            if AstQuality(RawAST) > AstQuality(AST) then
+                print(format(".r fallback better (%d > %d stmts)", AstQuality(RawAST), AstQuality(AST)))
+                AST = RawAST
+                UsedHook = false
+            end
+        end
+    end
+
+    if AstQuality(AST) < 3 and not IsBytecode and not RawContent then
+        local TempIn = Settings.out .. ".r2_in.lua"
+        local TempOut = Settings.out .. ".r2_out.lua"
+        local luneBin = process.os == "windows" and "lune.exe" or "lune"
+        pcall(fs.writeFile, TempIn, Code)
+        local POut = process.exec(luneBin, { "run", "mods/aspect.luau", TempIn, TempOut })
+        if POut and POut.exitCode == 0 then
+            local OkR2, ResultR2 = pcall(fs.readFile, TempOut)
+            if OkR2 and #ResultR2 > 50 then
+                print(format(".r2 (aspect) fallback produced %d bytes", #ResultR2))
+                local NewAST = Ast.new()
+                Ast.addStatement(NewAST, Ast.RawText(ResultR2))
+                AST = NewAST
+                UsedHook = false
+            end
+        end
+        pcall(fs.removeFile, TempIn)
+        pcall(fs.removeFile, TempOut)
+    end
 
     DONE_PROCESSING = true
 
@@ -5663,19 +5855,19 @@ local function TimedDump(File : string, RawContent : boolean?)
 
     Result = (if Settings.debug then Result else HideErrors(Result, nil, true)):gsub("\n%s*;\n", "\n"):gsub("discord%.gg/[%w_]+", "(discord invite)")
 
-    local TopComment = "-- Successfully sent http GET requests to the following site(s): "
+    local TopComment = "-- URLs requested via HTTP:"
     local Meowed;
     for _, v in next, AllowedUrlsInTheEnd do
-        TopComment ..= `'{v}', `
+        TopComment ..= `\n-- URL: {v.Url}\n-- METHOD: {v.Method}`
         Meowed = true
     end
 
-    if Meowed then Result = TopComment:sub(1, -3) .. "\n" .. Result end
+    if Meowed then Result = TopComment .. "\n\n" .. Result end
 
     print(format("Finished processing in %.8f seconds!", os.clock() - Start))
     fs.writeFile(
         Settings.out,
-        (if Settings.version then `-- This file was generated with UnveilR V{Settings.version} at discord.gg/threaded using the {Settings.prod and "production" or "testing"} version.\n\n` else "")
+        (if Settings.version then `-- powered by dsc.gg/6vms\n\n` else "")
         .. Result
     );
     _print("Finished processing")
