@@ -5880,13 +5880,9 @@ local Input = process.args[1]
 local outPath = process.args[2]
 
 if Input and outPath then
-    local Code = fs.readFile(Input)
     Settings.out = outPath
     Settings.ipt = Input
-    Settings.version = nil
-    
-    -- Chama o motor diretamente
-    return TimedDump(Input);
+    return TimedDump(Input)
 else
     print("Erro: Faltam argumentos")
 end
