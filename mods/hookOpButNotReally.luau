@@ -1,6 +1,6 @@
 local process = require("@lune/process")
 local luau = require("@lune/luau")
-local parser = { parse = function(code) return luau.parse(code) end, parsefile = function(path) return luau.parse(require("@lune/fs").readFile(path)) end }
+local parser = { parse = function(code) return require("@lune/luau").parse(code) end }
 local fs = require("@lune/fs")
 
 local function writeFileCompat(path, content)
