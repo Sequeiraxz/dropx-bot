@@ -511,11 +511,8 @@ local function HideErrors(text : string, hideLines : boolean?, clean : boolean?)
 end
 
 local function UseHookOp(Source : string, SourceFile : string?) : (boolean, string)
-    local FileName = SourceFile;
-    if not FileName then
-        FileName = "./cache/" .. GenId(8)
-        fs.writeFile(FileName, Source)
-    end
+    return true, Source
+end
 
     local OutPath = FileName .. "-unparsed.lua"
     local ScriptPath = "mods/hookOpButNotReally.luau"
