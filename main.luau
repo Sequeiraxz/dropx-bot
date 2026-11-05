@@ -555,17 +555,7 @@ end
         fs.removeFile(FileName)
     end
 
-    local s, Content = pcall(fs.readFile, OutPath)
-    if not DONT_DELETE_FILES and fs.isFile(OutPath) then pcall(fs.removeFile, OutPath) end
-    if not s or DONT_DELETE_FILES then print("Output:",POut.stdout,POut.stderr) end
-    if not s then
-        local errMsg = POut.stderr and #POut.stderr > 0 and POut.stderr or "hookOp output missing"
-        return false, `--err{errMsg}` 
-    end
-
-    return true, Content
-end
-
+    
 local function EnvLog(Source : (any) -> any, Nest : number) : AstExpression
     --> Environment logs the given file & outputs the code
 
