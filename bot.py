@@ -740,22 +740,25 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
         await ctx.message.add_reaction("⏳")
         msg = await ctx.reply("⏳ **Dumping...**")
         
-        in_path = "/opt/render/project/src/input.lua"
-        out_path = "/opt/render/project/src/out.lua"
+        # Prepara o JSON que o main.luau original espera
+        payload = json.dumps({"script": source.decode("utf-8", "ignore"), "settings": {"ipt": None}})
         
-        with open(in_path, "wb") as f:
-            f.write(source)
-            
+        # Chama o Lune na raiz do projeto, com o main.luau ORIGINAL
         proc = await asyncio.create_subprocess_exec(
-            "/opt/render/project/src/lune", "run", "main.luau", in_path, out_path,
+            "/opt/render/project/src/lune", "run", "main.luau",
             cwd="/opt/render/project/src",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        # Envia o JSON para o terminal do Lune
+        stdout, stderr = await asyncio.wait_for(proc.communicate(input=payload.encode() + b"\n"), timeout=120)
         
-        if proc.returncode != 0 or not os.path.exists(out_path):
+        # O main.luau original cria o "out.lua" na pasta principal
+        out_path = "/opt/render/project/src/out.lua"
+        
+        if not os.path.exists(out_path):
             err = stderr.decode("utf-8", "replace")[-800:] if stderr else "Unknown error"
             await msg.edit(content=f"❌ **Failed**\n```\n{err}\n```")
             await ctx.message.remove_reaction("⏳", bot.user)
@@ -764,13 +767,6 @@ async def api_dump(ctx: commands.Context, *, url: str = None):
             
         with open(out_path, "rb") as f: result = f.read()
         
-        if result.startswith(b"--err"):
-            err = result[5:].decode("utf-8", "replace").strip()
-            await msg.edit(content=f"❌ **Engine error**\n```\n{err}\n```")
-            await ctx.message.remove_reaction("⏳", bot.user)
-            await ctx.message.add_reaction("❌")
-            return
-            
         await msg.delete()
         await ctx.message.remove_reaction("⏳", bot.user)
         await ctx.message.add_reaction("✅")
