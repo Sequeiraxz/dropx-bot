@@ -19,7 +19,9 @@ DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
 MOONSEC_V2_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moonsec-v2-deobfuscator")
 MOONVEIL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moonveil-deobf")
 LUAOBFUSCATOR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "luaobfuscator-deobf", "luaobfuscator")
+ENVLOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "envlog.luau")
 NODE = os.environ.get("NODE", "node")
+LUNE = os.environ.get("LUNE", "/usr/local/bin/lune")
 DEOBF_TIMEOUT = 600
 CONFIG_FILE = "config.json"
 
@@ -281,6 +283,58 @@ async def run_luaobfuscator(source: bytes):
                 return None, stderr.decode("utf-8", "replace").strip()[-1200:] or f"exit code {proc.returncode}"
             return stdout, ""
 
+async def run_envlog(source: bytes):
+    if not os.path.exists(ENVLOG_PATH):
+        return None, "envlog.luau not found in project root"
+    try:
+        with open(ENVLOG_PATH, "r", encoding="utf-8") as f:
+            envlog_code = f.read()
+    except Exception as e:
+        return None, f"failed to read envlog.luau: {e}"
+
+    script_text = source.decode("utf-8", "ignore")
+    eq = "=" * 5
+    while (']' + eq + ']') in script_text:
+        eq += "="
+    safe_source = f"[{eq}[{script_text}]{eq}]"
+
+    prelude = (
+        f"local __SOURCE = {safe_source}\n"
+        f"local __CONFIG = {{}}\n"
+        f"local __ROBLOX = {{ enums = '', classes = '' }}\n"
+        f"local __UNICODE = {{ decomp = '', ccc = '', comp = '' }}\n"
+        f"local __P2D = {{}}\n"
+        f"local __CHUNKS = {{}}\n"
+    )
+    runner = prelude + envlog_code
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runner_path = os.path.join(tmp, "envlog_runner.luau")
+        with open(runner_path, "w", encoding="utf-8") as f:
+            f.write(runner)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                LUNE, "run", runner_path,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            return None, "timeout (300s)"
+        except FileNotFoundError:
+            return None, f"lune not found at {LUNE}"
+
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", "replace")[-1200:]
+            return None, f"lune exit {proc.returncode}: {err}"
+
+        out = stdout.decode("utf-8", "replace")
+        if not out.strip():
+            return None, "envlog produced no output"
+        return out.encode("utf-8"), ""
+
 async def fetch_url(url: str):
     if not re.match(r"^https?://", url):
         return None, "Invalid URL"
@@ -387,15 +441,37 @@ class LuaObfuscatorButton(discord.ui.Button):
             traceback.print_exc()
             await interaction.followup.send(f"Error: `{e!r}`", ephemeral=True)
 
+class EnvLogButton(discord.ui.Button):
+    def __init__(self, enabled=True):
+        super().__init__(label="Env Logger", style=discord.ButtonStyle.secondary, disabled=not enabled, row=1)
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            src = getattr(self.view, "source", None)
+            if not src:
+                return await interaction.response.send_message("Script not found.", ephemeral=True)
+            self.view.stop()
+            await interaction.response.edit_message(content="Running env logger...", embed=None, view=None)
+            res, err = await run_envlog(src)
+            if not res:
+                return await interaction.followup.send(f"Failed:\n```\n{err}\n```")
+            await interaction.followup.send(
+                content=f"Env log — {len(res)} bytes",
+                file=discord.File(fp=io.BytesIO(res), filename="envlog_output.lua"),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            await interaction.followup.send(f"Error: `{e!r}`", ephemeral=True)
+
 class DeobfView(discord.ui.View):
     def __init__(self, source: bytes, prometheus_enabled=True, moonsec_enabled=True,
-                 moonveil_enabled=True, luaobf_enabled=True):
+                 moonveil_enabled=True, luaobf_enabled=True, envlog_enabled=True):
         super().__init__(timeout=600)
         self.source = source
         self.add_item(PrometheusButton(enabled=prometheus_enabled))
         self.add_item(MoonSecV2Button(enabled=moonsec_enabled))
         self.add_item(MoonVeilButton(enabled=moonveil_enabled))
         self.add_item(LuaObfuscatorButton(enabled=luaobf_enabled))
+        self.add_item(EnvLogButton(enabled=envlog_enabled))
 
 async def get_source(ctx: commands.Context, url: str = None):
     if ctx.message.attachments:
@@ -442,7 +518,7 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     elif is_moonsec: desc += "Click **MoonSec V2** to deobfuscate."
     elif is_moonveil: desc += "Click **MoonVeil** to deobfuscate."
     elif is_luaobf: desc += "Click **LuaObfuscator** to deobfuscate."
-    else: desc += "Try any deobfuscator."
+    else: desc += "Try any deobfuscator or the Env Logger."
     embed = discord.Embed(title="DropX Deobfuscator", description=desc, color=0x2ECC71)
     embed.set_footer(text="Made by DropX")
     await ctx.reply(embed=embed, view=DeobfView(source))
@@ -473,11 +549,29 @@ async def stats(ctx: commands.Context):
 async def help_cmd(ctx: commands.Context):
     e = discord.Embed(title="DropX Commands", description="Prefix: `.`", color=0x2ECC71)
     e.add_field(name="`.alojar`", value="Host bot in this channel", inline=False)
-    e.add_field(name="`.deobf`", value="Deobfuscate (Prometheus, MoonSec V2, MoonVeil, LuaObfuscator)", inline=False)
+    e.add_field(name="`.deobf`", value="Deobfuscate (Prometheus, MoonSec V2, MoonVeil, LuaObfuscator) + Env Logger", inline=False)
+    e.add_field(name="`.l`", value="Run env logger only", inline=False)
     e.add_field(name="`.detector`", value="Detect obfuscator only", inline=False)
     e.add_field(name="`.stats`", value="Bot stats", inline=False)
     e.set_footer(text="Made by DropX")
     await ctx.reply(embed=e)
+
+# ---------- COMANDO .l (env logger) ----------
+@bot.command(name="l")
+async def env_logger_cmd(ctx: commands.Context, *, url: str = None):
+    if config["channel_id"] is None:
+        return await ctx.reply("Bot not hosted. Use `.alojar`.")
+    if ctx.channel.id != config["channel_id"]:
+        return await ctx.reply("Wrong channel.", delete_after=5)
+    source, err = await get_source(ctx, url)
+    if source is None:
+        return await ctx.reply(err, delete_after=5)
+    msg = await ctx.reply("⏳ **Running env logger...**")
+    res, err = await run_envlog(source)
+    if not res:
+        return await msg.edit(content=f"❌ Failed:\n```\n{err}\n```")
+    await msg.edit(content=f"✅ Env log — {len(res)} bytes")
+    await ctx.reply(file=discord.File(fp=io.BytesIO(res), filename="envlog_output.lua"))
 
 # ---------- HANDLERS ----------
 @bot.event
