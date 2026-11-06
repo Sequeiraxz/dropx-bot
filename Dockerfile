@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y curl unzip && \
-    curl -fsSL https://github.com/lune-org/lune/releases/latest/download/lune-linux-x86_64.zip -o /tmp/lune.zip && \
+    curl -fsSL https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-linux-x86_64.zip -o /tmp/lune.zip && \
     unzip /tmp/lune.zip -d /usr/local/bin/ && \
     rm /tmp/lune.zip && \
     chmod +x /usr/local/bin/lune
