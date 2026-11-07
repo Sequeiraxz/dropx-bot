@@ -1,4 +1,4 @@
--- envlog3.luau  (v3.1)  -- ficheiro completo, pronto a colar
+-- envlog3.luau  (v3.2)  -- ficheiro completo, pronto a colar
 -- Env logger / sandbox para análise de scripts ofuscados (lune 0.11, Luau, Lua 5.1/LuaJIT como fallback)
 -- Compatível com WeAreDevs, Prometheus, MoonSec, MoonVeil, Luraph, LuaObfuscator, etc.
 -- __SOURCE é injetado pelo bot.py antes deste ficheiro correr (global ou local).
@@ -43,12 +43,12 @@ local CONFIG = {
 	FIRE_ALL_SIGNALS = false, -- true = dispara qualquer :Connect uma vez com um mock
 	TRACE_ENABLED = true,
 	EXECUTOR_NAME = "envlog3",
-	EXECUTOR_VERSION = "3.1",
+	EXECUTOR_VERSION = "3.2",
 	BASE_TIME = 1700000000,
 	MAX_STRINGS = 3000,       -- strings descodificadas guardadas
 	MIN_STRING_LEN = 6,
 	MAX_CPU_SECONDS = 20,     -- corta loops sem wait (relógio real)
-	AUTO_STUB_UPPER = true,   -- globais Capitalizadas desconhecidas -> stub
+	AUTO_STUB_UPPER = false,  -- DESLIGADO: partia scripts que testam as próprias globais (ex: CiaHubCleanup)
 	MAX_SWALLOWED = 300,      -- erros engolidos por pcall guardados
 }
 do
