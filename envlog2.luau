@@ -1220,10 +1220,14 @@ end
 
 -- ---------- sandbox ----------
 local sandbox = {}
-for name in R.gmatch("pcall xpcall assert select tostring tonumber pairs ipairs next rawget rawset rawequal rawlen "
-	.. "setmetatable getmetatable collectgarbage coroutine utf8 string table buffer", "%S+") do
-	if _G[name] ~= nil then sandbox[name] = _G[name] end
-end
+sandbox.pcall, sandbox.xpcall, sandbox.select = R.pcall, R.xpcall, R.select
+sandbox.tostring, sandbox.tonumber = R.tostring, R.tonumber
+sandbox.pairs, sandbox.ipairs, sandbox.next = R.pairs, R.ipairs, R.next
+sandbox.rawget, sandbox.rawset, sandbox.rawequal = R.rawget, R.rawset, R.rawequal
+sandbox.setmetatable, sandbox.getmetatable = R.setmetatable, R.getmetatable
+sandbox.assert, sandbox.rawlen, sandbox.collectgarbage = assert, rawlen, collectgarbage
+sandbox.coroutine, sandbox.string, sandbox.table = coroutine, string, table
+sandbox.utf8, sandbox.buffer = utf8, buffer
 sandbox.unpack = R.unpack
 sandbox.math = sb_math
 sandbox.os = sb_os
