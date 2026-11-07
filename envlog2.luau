@@ -1,5 +1,5 @@
 -- envlog2.luau
--- Segundo env logger — versão melhorada, com mais mocks do Roblox
+-- Segundo env logger — versão melhorada, compatível com lune 0.11
 -- __SOURCE é injetado pelo bot.py antes deste ficheiro correr
 
 local SOURCE = __SOURCE or ""
@@ -20,6 +20,96 @@ local function record(tbl, ...)
     end
     tbl[#tbl + 1] = table.concat(parts, "\t")
 end
+
+-- ---------- bit32 mock (sem & | ~ << >>) ----------
+local function to_u32(x)
+    x = math.floor(tonumber(x) or 0) % 4294967296
+    if x < 0 then x = x + 4294967296 end
+    return x
+end
+
+local function band(a, b)
+    a, b = to_u32(a), to_u32(b)
+    local result, bit = 0, 1
+    for _ = 1, 32 do
+        if (a % 2 == 1) and (b % 2 == 1) then
+            result = result + bit
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        bit = bit * 2
+    end
+    return result
+end
+
+local function bor(a, b)
+    a, b = to_u32(a), to_u32(b)
+    local result, bit = 0, 1
+    for _ = 1, 32 do
+        if (a % 2 == 1) or (b % 2 == 1) then
+            result = result + bit
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        bit = bit * 2
+    end
+    return result
+end
+
+local function bxor(a, b)
+    a, b = to_u32(a), to_u32(b)
+    local result, bit = 0, 1
+    for _ = 1, 32 do
+        if (a % 2) ~= (b % 2) then
+            result = result + bit
+        end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        bit = bit * 2
+    end
+    return result
+end
+
+local function lshift(a, n)
+    n = (tonumber(n) or 0) % 32
+    return to_u32(to_u32(a) * (2 ^ n))
+end
+
+local function rshift(a, n)
+    n = (tonumber(n) or 0) % 32
+    return to_u32(math.floor(to_u32(a) / (2 ^ n)))
+end
+
+local bit32_mock = {
+    band = band,
+    bor = bor,
+    bxor = bxor,
+    lshift = lshift,
+    rshift = rshift,
+    arshift = rshift,
+    rol = function(a, b)
+        b = (tonumber(b) or 0) % 32
+        return to_u32(lshift(a, b) + rshift(a, 32 - b))
+    end,
+    ror = function(a, b)
+        b = (tonumber(b) or 0) % 32
+        return to_u32(rshift(a, b) + lshift(a, 32 - b))
+    end,
+    bnot = function(a)
+        return to_u32(4294967295 - to_u32(a))
+    end,
+    extract = function(n, field, width)
+        return band(rshift(n, field), 2 ^ ((width or 1)) - 1)
+    end,
+    replace = function(n, v, field, width)
+        return n
+    end,
+    btest = function(a, b)
+        return band(a, b) ~= 0
+    end,
+    countlz = function(a) return 0 end,
+    countrz = function(a) return 0 end,
+}
 
 -- ---------- mocks ----------
 local function mock_object(name)
@@ -57,13 +147,11 @@ local function mock_object(name)
         if k == "InvokeServer" then
             return function() return mock_object(name .. "_result") end
         end
-        -- propriedades comuns
         if k == "Position" then return { X = 0, Y = 0, Z = 0 } end
         if k == "Size" then return { X = 1, Y = 1, Z = 1 } end
         if k == "Value" then return 0 end
         if k == "Text" then return "" end
         if k == "Visible" then return true end
-        -- fallback: devolve um objeto mock
         return mock_object(name .. "." .. tostring(k))
     end
     mt.__newindex = function(t, k, v) end
@@ -108,55 +196,26 @@ local function mock_loadstring(code, chunkname)
     return fn
 end
 
-local function mock_getfenv(f)
-    return _G
-end
-
-local function mock_setfenv(f, env)
-    return f
-end
-
--- bit32 mock (o lune pode não ter)
-local bit32_mock = {
-    band = function(a, b) return (a or 0) & (b or 0) end,
-    bor  = function(a, b) return (a or 0) | (b or 0) end,
-    bxor = function(a, b) return (a or 0) ~ (b or 0) end,
-    lshift = function(a, b) return (a or 0) << ((b or 0) % 32) end,
-    rshift = function(a, b) return (a or 0) >> ((b or 0) % 32) end,
-    arshift = function(a, b) return (a or 0) >> ((b or 0) % 32) end,
-    rol = function(a, b) return ((a or 0) << ((b or 0) % 32)) | ((a or 0) >> (32 - ((b or 0) % 32))) end,
-    ror = function(a, b) return ((a or 0) >> ((b or 0) % 32)) | ((a or 0) << (32 - ((b or 0) % 32))) end,
-    bnot = function(a) return ~(a or 0) end,
-    extract = function(n, field, width) return ((n or 0) >> (field or 0)) & ((1 << (width or 1)) - 1) end,
-    replace = function(n, v, field, width) return n end,
-    btest = function(a, b) return ((a or 0) & (b or 0)) ~= 0 end,
-    countlz = function(a) return 0 end,
-    countrz = function(a) return 0 end,
-}
-
 -- ---------- sandbox ----------
 local sandbox = {}
 
--- copia funções base do ambiente
 for _, name in ipairs({ "print", "warn", "error", "pcall", "xpcall", "assert", "select", "type", "typeof",
                         "tostring", "tonumber", "pairs", "ipairs", "next", "rawget", "rawset", "rawequal",
                         "rawlen", "setmetatable", "getmetatable", "unpack", "require", "collectgarbage" }) do
     sandbox[name] = _G[name]
 end
 
--- mocks
 sandbox.print = function(...) record(captured_prints, ...) end
 sandbox.warn = function(...) record(captured_warns, ...) end
 sandbox.error = function(...) record(captured_errors, ...); error(...) end
 sandbox.loadstring = mock_loadstring
 sandbox.load = mock_loadstring
-sandbox.getfenv = mock_getfenv
-sandbox.setfenv = mock_setfenv
+sandbox.getfenv = function(f) return sandbox end
+sandbox.setfenv = function(f, env) return f end
 sandbox.getgenv = function() return sandbox end
 sandbox.bit32 = bit32_mock
 sandbox.bit = bit32_mock
 
--- Roblox mocks
 sandbox.game = mock_object("Game")
 sandbox.workspace = mock_object("Workspace")
 sandbox.script = mock_object("Script")
@@ -170,7 +229,7 @@ sandbox.UDim = { new = function(s, o) return { Scale = s or 0, Offset = o or 0 }
 sandbox.UDim2 = { new = function() return mock_object("UDim2") end }
 sandbox.Enum = mock_object("Enum")
 sandbox.task = {
-    wait = function(t) if t then end; return 0 end,
+    wait = function(t) return 0 end,
     spawn = function(f, ...) if type(f) == "function" then pcall(f, ...) end end,
     delay = function(t, f, ...) if type(f) == "function" then pcall(f, ...) end end,
     defer = function(f, ...) if type(f) == "function" then pcall(f, ...) end end,
@@ -187,7 +246,6 @@ sandbox.math = math
 sandbox.coroutine = coroutine
 sandbox.utf8 = utf8 or {}
 
--- metatable do sandbox: globals não definidos → nil (não erro)
 setmetatable(sandbox, {
     __index = function(t, k)
         record(touched_globals, tostring(k))
@@ -198,14 +256,14 @@ setmetatable(sandbox, {
     end,
 })
 
--- ---------- execução ----------
-local function build_output()
+-- ---------- output ----------
+local function build_output(run_status, elapsed)
     local out = {}
     local total = 0
     local function add(s)
         s = tostring(s or "")
         if total + #s > MAX_OUTPUT_CHARS then
-            out[#out + 1] = "\n-- [output truncated at " .. MAX_OUTPUT_CHARS .. " chars] --\n"
+            out[#out + 1] = "\n-- [output truncated] --\n"
             return false
         end
         out[#out + 1] = s
@@ -214,6 +272,8 @@ local function build_output()
     end
 
     add("ENVLOG2-BEGIN\n")
+    add("-- run status: " .. run_status .. "\n")
+    add("-- elapsed: " .. string.format("%.3fs", elapsed or 0) .. "\n")
     add("-- source bytes: " .. #SOURCE .. "\n")
     add("-- prints: " .. #captured_prints .. " | warns: " .. #captured_warns .. " | errors: " .. #captured_errors .. "\n")
     add("-- globals touched: " .. table.concat(touched_globals, ", ") .. "\n")
@@ -241,16 +301,13 @@ local function build_output()
     return table.concat(out)
 end
 
--- compila o script
+-- ---------- execução ----------
 local chunk, compile_err = load(SOURCE, "user_script")
 if not chunk then
-    print("ENVLOG2-BEGIN")
-    print("-- COMPILE ERROR: " .. tostring(compile_err))
-    print("ENVLOG2-END")
+    print(build_output("compile error: " .. tostring(compile_err), 0))
     return
 end
 
--- corre com setfenv (lune suporta)
 if setfenv then
     pcall(setfenv, chunk, sandbox)
 end
@@ -259,9 +316,12 @@ local start = os.clock()
 local ok, runtime_err = pcall(chunk)
 local elapsed = os.clock() - start
 
-if not ok then
+local status
+if ok then
+    status = "ok"
+else
+    status = "error: " .. tostring(runtime_err)
     record(captured_errors, "runtime: " .. tostring(runtime_err))
 end
 
-print("-- run status: " .. (ok and "ok" or ("error: " .. tostring(runtime_err))) .. "\n-- elapsed: " .. string.format("%.3fs", elapsed))
-print(build_output())
+print(build_output(status, elapsed))
