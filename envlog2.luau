@@ -1,18 +1,14 @@
--- envlog2.luau  (v3.0)
+-- envlog3.luau  (v3.1)  -- ficheiro completo, pronto a colar
 -- Env logger / sandbox para análise de scripts ofuscados (lune 0.11, Luau, Lua 5.1/LuaJIT como fallback)
--- Compatível com WeAreDevs, Prometheus, MoonSec, MoonVeil, LuaObfuscator, etc.
+-- Compatível com WeAreDevs, Prometheus, MoonSec, MoonVeil, Luraph, LuaObfuscator, etc.
 -- __SOURCE é injetado pelo bot.py antes deste ficheiro correr (global ou local).
 -- Opcional: __ENVLOG_CONFIG = { MAX_PRINTS = 5000, TICKS = 10, ... } para sobrepor a CONFIG abaixo.
 --
--- Novidades face à v2:
---   * loader correto no lune (@lune/luau) + setfenv, sem poluir o _G real
---   * captura TODOS os loadstring (camadas desofuscadas) e corre-os no mesmo sandbox
---   * scheduler com tempo virtual (task.wait/spawn/delay/defer reais, loops infinitos são cortados)
---   * mocks de Instance consistentes (cache), com trace de chamadas/atribuições
---   * rede/webhooks, RemoteEvents, ficheiros (writefile), clipboard, queue_on_teleport -> EVENTS
---   * Vector3/Vector2/CFrame/Color3/UDim2/Enum com comportamento real, Random determinístico
---   * bit32 nativo (fallback correto), `bit`, base64 real, JSON encode/decode
---   * os restrito (sem execute/remove/exit), sem escrita no _G do host
+-- Novidades da v3.1 face à v3.0 (envlog2):
+--   * captura de strings descodificadas (string.char, table.concat, gsub, format, reverse, base64)
+--   * stubs universais para globais capitalizadas desconhecidas (Path2DControlPoint, ...)
+--   * regista erros engolidos por pcall/xpcall (anti-tamper / anti-sandbox)
+--   * orçamento de CPU em tempo real (corta loops sem wait)
 
 local R = {
 	print = print, pcall = pcall, xpcall = xpcall, tostring = tostring, tonumber = tonumber,
@@ -46,9 +42,14 @@ local CONFIG = {
 	TICKS = 5,                -- quantas vezes disparar Heartbeat/RenderStepped
 	FIRE_ALL_SIGNALS = false, -- true = dispara qualquer :Connect uma vez com um mock
 	TRACE_ENABLED = true,
-	EXECUTOR_NAME = "envlog2",
-	EXECUTOR_VERSION = "3.0",
+	EXECUTOR_NAME = "envlog3",
+	EXECUTOR_VERSION = "3.1",
 	BASE_TIME = 1700000000,
+	MAX_STRINGS = 3000,       -- strings descodificadas guardadas
+	MIN_STRING_LEN = 6,
+	MAX_CPU_SECONDS = 20,     -- corta loops sem wait (relógio real)
+	AUTO_STUB_UPPER = true,   -- globais Capitalizadas desconhecidas -> stub
+	MAX_SWALLOWED = 300,      -- erros engolidos por pcall guardados
 }
 do
 	local uc = __ENVLOG_CONFIG
@@ -61,7 +62,7 @@ end
 local SOURCE = __SOURCE
 if R.type(SOURCE) ~= "string" then SOURCE = "" end
 if SOURCE == "" then
-	-- uso manual: lune run envlog2.luau -- ficheiro.lua
+	-- uso manual: lune run envlog3.luau -- ficheiro.lua
 	R.pcall(function()
 		local process = R.require("@lune/process")
 		local fs = R.require("@lune/fs")
@@ -1526,7 +1527,8 @@ sandbox.Enum = Enum_lib
 sandbox.Random = Random_lib
 for name in R.gmatch("BrickColor Rect Region3 Region3int16 Ray NumberRange NumberSequence NumberSequenceKeypoint "
 	.. "ColorSequence ColorSequenceKeypoint PhysicalProperties Font RaycastParams OverlapParams PathWaypoint Faces Axes "
-	.. "CatalogSearchParams DateTime TweenInfo SharedTable", "%S+") do
+	.. "CatalogSearchParams DateTime TweenInfo SharedTable Path2DControlPoint DockWidgetPluginGuiInfo "
+	.. "SecurityCapabilities RotationCurveKey FloatCurveKey Secret Content TextChatMessageProperties", "%S+") do
 	sandbox[name] = ctor_stub(name)
 end
 sandbox.settings = function() return make_object("settings()", "Settings", "GlobalSettings", nil) end
@@ -1685,9 +1687,133 @@ do
 	}
 end
 
+-- ---------- captura de strings descodificadas + orçamento de CPU ----------
+local cpu_start = R.clock()
+local captured, captured_set = {}, {}
+
+local function check_budget()
+	if R.clock() - cpu_start > CONFIG.MAX_CPU_SECONDS then
+		abort_reason = abort_reason or ("cpu budget (" .. CONFIG.MAX_CPU_SECONDS .. "s) exceeded")
+		R.error("envlog: cpu budget exceeded", 0)
+	end
+end
+
+local function looks_useful(s)
+	local n = #s
+	if n < CONFIG.MIN_STRING_LEN or n > 4000 then return false end
+	local bad = R.gsub(s, "[%w%p ]", "")
+	return #bad <= n * 0.1
+end
+
+local INTERESTING = { "https?://", "discord%.com", "webhook", "loadstring", "HttpGet", "GetService",
+	"%.lua", "pastebin", "raw%.githubusercontent", "api/webhooks" }
+
+local function capture_string(s, how)
+	if R.type(s) ~= "string" or captured_set[s] then return end
+	if #captured >= CONFIG.MAX_STRINGS or not looks_useful(s) then return end
+	captured_set[s] = true
+	captured[#captured + 1] = { t = vclock, how = how, s = s }
+	for _, pat in R.ipairs(INTERESTING) do
+		if R.find(s, pat) then
+			event("decoded-string", how .. ": " .. quote(clip(s, 600)))
+			break
+		end
+	end
+end
+
+local sb_string = {}
+for k, v in R.pairs(string) do sb_string[k] = v end
+do
+	local o_char, o_gsub, o_format, o_reverse = string.char, string.gsub, string.format, string.reverse
+	sb_string.char = function(...)
+		check_budget()
+		local r = o_char(...)
+		capture_string(r, "string.char")
+		return r
+	end
+	sb_string.reverse = function(s)
+		local r = o_reverse(s)
+		capture_string(r, "string.reverse")
+		return r
+	end
+	sb_string.gsub = function(s, p, r, n)
+		check_budget()
+		local a, b = o_gsub(s, p, r, n)
+		capture_string(a, "string.gsub")
+		return a, b
+	end
+	sb_string.format = function(f, ...)
+		local r = o_format(f, ...)
+		capture_string(r, "string.format")
+		return r
+	end
+end
+
+local sb_table = {}
+for k, v in R.pairs(table) do sb_table[k] = v end
+do
+	local o_concat = table.concat
+	sb_table.concat = function(t, sep, i, j)
+		check_budget()
+		local r = o_concat(t, sep, i, j)
+		capture_string(r, "table.concat")
+		return r
+	end
+end
+sandbox.string = sb_string
+sandbox.table = sb_table
+
+do
+	local o_dec = b64decode
+	local function dec(s)
+		local r = o_dec(s)
+		capture_string(r, "base64decode")
+		return r
+	end
+	sandbox.base64_decode, sandbox.base64decode = dec, dec
+	sandbox.crypt.base64decode, sandbox.crypt.base64_decode = dec, dec
+	sandbox.crypt.base64.decode = dec
+end
+
+do
+	local o_wait = sb_wait
+	sb_wait = function(t) check_budget(); return o_wait(t) end
+	sandbox.task.wait = sb_wait
+end
+
+-- ---------- erros engolidos por pcall/xpcall + stubs universais ----------
+local swallowed, swallowed_idx = {}, {}
+local function swallow(msg)
+	msg = clip(safe_tostring(msg), 400)
+	local e = swallowed_idx[msg]
+	if e then e.n = e.n + 1; return end
+	if #swallowed >= CONFIG.MAX_SWALLOWED then return end
+	e = { msg = msg, n = 1 }
+	swallowed[#swallowed + 1] = e
+	swallowed_idx[msg] = e
+end
+
+local function pack(...) return { n = R.select("#", ...), ... } end
+
+sandbox.pcall = function(f, ...)
+	local r = pack(R.pcall(f, ...))
+	if not r[1] then swallow(r[2]) end
+	return R.unpack(r, 1, r.n)
+end
+sandbox.xpcall = function(f, handler, ...)
+	local r = pack(R.xpcall(f, function(e)
+		swallow(e)
+		if R.type(handler) == "function" then return handler(e) end
+		return e
+	end, ...))
+	return R.unpack(r, 1, r.n)
+end
+
+local NOSTUB = { Wait = true, Spawn = true, Delay = true, Version = true }
+
 -- rastrear globais indefinidos / novos
 R.setmetatable(sandbox, {
-	__index = function(_, k)
+	__index = function(t, k)
 		if R.type(k) == "string" then
 			local c = undefined_globals[k]
 			if c then
@@ -1695,6 +1821,12 @@ R.setmetatable(sandbox, {
 			else
 				undefined_globals[k] = 1
 				undefined_order[#undefined_order + 1] = k
+			end
+			if CONFIG.AUTO_STUB_UPPER and #k >= 4 and not NOSTUB[k] and R.find(k, "^%u%w+$") then
+				local s = ctor_stub(k)
+				R.rawset(t, k, s)
+				event("auto-stub", k)
+				return s
 			end
 		end
 		return nil
@@ -1748,6 +1880,7 @@ local function build_output(run_status, elapsed)
 	add("-- prints: " .. #prints .. " | warns: " .. #warns .. " | errors: " .. #errors_list .. "\n")
 	add("-- loadstrings: " .. counters.loads .. " (" .. #loads .. " distintos) | requests: " .. counters.requests
 		.. " | remotes: " .. counters.remotes .. " | files: " .. counters.files .. "\n")
+	add("-- decoded strings: " .. #captured .. " | swallowed errors: " .. #swallowed .. "\n")
 	add("-- virtual time: " .. R.format("%.2fs", vclock) .. " | threads: " .. counters.threads
 		.. " | resumes: " .. counters.resumes .. " | waits: " .. counters.waits .. "\n")
 	if abort_reason then add("-- abort: " .. abort_reason .. "\n") end
@@ -1761,7 +1894,13 @@ local function build_output(run_status, elapsed)
 		local head = "-- load #" .. i .. " | " .. #l.src .. " bytes | hash=" .. l.hash .. " | calls=" .. l.count
 			.. (l.name and (" | chunk=" .. clip(l.name, 80)) or "") .. (l.err and (" | compile error: " .. clip(l.err, 300)) or "") .. "\n"
 		return head .. clip(l.src, 150000) .. "\n-- end load #" .. i .. " --\n"
-	end, 0.35)
+	end, 0.30)
+	section("DECODED STRINGS", captured, function(i, c)
+		return R.format("[%d] (%s @%.2f) %s\n", i, c.how, c.t, quote(clip(c.s, 1500)))
+	end, 0.15)
+	section("SWALLOWED ERRORS (pcall/xpcall falhou: anti-tamper?)", swallowed, function(i, e)
+		return "[" .. i .. "] x" .. e.n .. "  " .. e.msg .. "\n"
+	end, 0.05)
 	section("EVENTS", events, function(_, e) return R.format("[%7.2f] %s: %s\n", e.t, e.kind, e.text) end, 0.08)
 	section("TRACE", trace, function(_, t)
 		return R.format("[%7.2f] %-5s %s%s\n", t.t, t.kind, t.text, t.n > 1 and (" (x" .. t.n .. ")") or "")
@@ -1811,6 +1950,7 @@ scheduled[main_item.co] = true
 counters.threads = counters.threads + 1
 
 local t0 = R.clock()
+cpu_start = t0
 resume_item(main_item)
 run_scheduler()
 local elapsed = R.clock() - t0
