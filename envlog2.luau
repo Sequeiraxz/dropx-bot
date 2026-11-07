@@ -1,4 +1,4 @@
--- envlog3.luau  (v3.2)  -- ficheiro completo, pronto a colar
+-- envlog3.luau  (v3.3)  -- ficheiro completo, pronto a colar
 -- Env logger / sandbox para análise de scripts ofuscados (lune 0.11, Luau, Lua 5.1/LuaJIT como fallback)
 -- Compatível com WeAreDevs, Prometheus, MoonSec, MoonVeil, Luraph, LuaObfuscator, etc.
 -- __SOURCE é injetado pelo bot.py antes deste ficheiro correr (global ou local).
@@ -43,13 +43,15 @@ local CONFIG = {
 	FIRE_ALL_SIGNALS = false, -- true = dispara qualquer :Connect uma vez com um mock
 	TRACE_ENABLED = true,
 	EXECUTOR_NAME = "envlog3",
-	EXECUTOR_VERSION = "3.2",
+	EXECUTOR_VERSION = "3.3",
 	BASE_TIME = 1700000000,
 	MAX_STRINGS = 3000,       -- strings descodificadas guardadas
 	MIN_STRING_LEN = 6,
 	MAX_CPU_SECONDS = 20,     -- corta loops sem wait (relógio real)
 	AUTO_STUB_UPPER = false,  -- DESLIGADO: partia scripts que testam as próprias globais (ex: CiaHubCleanup)
 	MAX_SWALLOWED = 300,      -- erros engolidos por pcall guardados
+	TRACE_GLOBAL_READS = false, -- true = regista TODA a leitura de globais (diagnóstico de saídas silenciosas)
+	MAX_READ_LOG = 400,
 }
 do
 	local uc = __ENVLOG_CONFIG
@@ -1221,6 +1223,7 @@ end
 
 -- ---------- sandbox ----------
 local sandbox = {}
+local script_env = sandbox -- vira um proxy se TRACE_GLOBAL_READS = true
 sandbox.pcall, sandbox.xpcall, sandbox.select = R.pcall, R.xpcall, R.select
 sandbox.tostring, sandbox.tonumber = R.tostring, R.tonumber
 sandbox.pairs, sandbox.ipairs, sandbox.next = R.pairs, R.ipairs, R.next
@@ -1274,20 +1277,20 @@ local function compile(src, name)
 	if R.loadstring then
 		fn, err = R.loadstring(src, name)
 		if fn then
-			local ok = R.setfenv and R.pcall(R.setfenv, fn, sandbox)
+			local ok = R.setfenv and R.pcall(R.setfenv, fn, script_env)
 			env_mode = ok and "loadstring+setfenv" or "loadstring (sem setfenv)"
 		end
 	elseif luau_mod then
-		local ok, res = R.pcall(luau_mod.load, src, { debugName = name, environment = sandbox, injectGlobals = false })
+		local ok, res = R.pcall(luau_mod.load, src, { debugName = name, environment = script_env, injectGlobals = false })
 		if ok then
 			fn = res
-			local sok = R.setfenv and R.pcall(R.setfenv, fn, sandbox)
+			local sok = R.setfenv and R.pcall(R.setfenv, fn, script_env)
 			env_mode = sok and "lune luau.load+setfenv" or "lune luau.load (env copiado)"
 		else
 			err = res
 		end
 	elseif R.load then
-		fn, err = R.load(src, name, "t", sandbox)
+		fn, err = R.load(src, name, "t", script_env)
 		env_mode = "load(env)"
 	else
 		return nil, "no loader available"
@@ -1327,10 +1330,10 @@ sandbox.load = function(chunk, name)
 	end
 	return sandbox.loadstring(chunk, name)
 end
-sandbox.getfenv = function() return sandbox end
+sandbox.getfenv = function() return script_env end
 sandbox.setfenv = function(f) return f end
-sandbox.getgenv = function() return sandbox end
-sandbox.getrenv = function() return sandbox end
+sandbox.getgenv = function() return script_env end
+sandbox.getrenv = function() return script_env end
 sandbox.newproxy = R.newproxy or function() return R.setmetatable({}, {}) end
 
 -- scheduler com tempo virtual
@@ -1840,6 +1843,32 @@ R.setmetatable(sandbox, {
 	end,
 })
 
+-- ---------- diagnóstico: registo de leituras de globais ----------
+local read_counts, read_order, read_tail, read_n = {}, {}, {}, 0
+if CONFIG.TRACE_GLOBAL_READS then
+	local proxy = {}
+	R.setmetatable(proxy, {
+		__index = function(_, k)
+			if R.type(k) == "string" then
+				local c = read_counts[k]
+				if c then
+					read_counts[k] = c + 1
+				else
+					read_counts[k] = 1
+					read_order[#read_order + 1] = k
+				end
+				read_n = read_n + 1
+				read_tail[read_n % 40] = k
+			end
+			return sandbox[k]
+		end,
+		__newindex = function(_, k, v) sandbox[k] = v end,
+		__iter = function() return R.next, sandbox end,
+	})
+	script_env = proxy
+	sandbox._G = proxy
+end
+
 -- ---------- relatório ----------
 local function build_output(run_status, elapsed)
 	local out, total, truncated = {}, 0, false
@@ -1901,6 +1930,17 @@ local function build_output(run_status, elapsed)
 	section("SWALLOWED ERRORS (pcall/xpcall falhou: anti-tamper?)", swallowed, function(i, e)
 		return "[" .. i .. "] x" .. e.n .. "  " .. e.msg .. "\n"
 	end, 0.05)
+	local rl = {}
+	for i, k in R.ipairs(read_order) do
+		if i > CONFIG.MAX_READ_LOG then break end
+		rl[#rl + 1] = k .. " x" .. read_counts[k]
+	end
+	section("GLOBAL READS (ordem da primeira leitura)", rl, function(_, s) return s .. "\n" end, 0.05)
+	local rt = {}
+	for i = read_n - 39, read_n do
+		if i >= 1 then rt[#rt + 1] = read_tail[i % 40] end
+	end
+	section("LAST GLOBAL READS (as ultimas 40, antes de parar)", rt, function(_, s) return s .. "\n" end, 0.02)
 	section("EVENTS", events, function(_, e) return R.format("[%7.2f] %s: %s\n", e.t, e.kind, e.text) end, 0.08)
 	section("TRACE", trace, function(_, t)
 		return R.format("[%7.2f] %-5s %s%s\n", t.t, t.kind, t.text, t.n > 1 and (" (x" .. t.n .. ")") or "")
