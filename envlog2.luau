@@ -1,5 +1,5 @@
 -- envlog2.luau
--- Segundo env logger — versão melhorada, compatível com lune 0.11
+-- Segundo env logger — compatível com lune 0.11
 -- __SOURCE é injetado pelo bot.py antes deste ficheiro correr
 
 local SOURCE = __SOURCE or ""
@@ -188,7 +188,12 @@ end
 
 local function mock_loadstring(code, chunkname)
     record(touched_globals, "loadstring", tostring(chunkname))
-    local fn, err = load(code, chunkname or "chunk")
+    local loader = load or loadstring
+    if not loader then
+        record(captured_errors, "loadstring failed: no load function")
+        return nil, "no load function"
+    end
+    local fn, err = loader(code, chunkname or "chunk")
     if not fn then
         record(captured_errors, "loadstring failed: " .. tostring(err))
         return nil, err
@@ -199,10 +204,15 @@ end
 -- ---------- sandbox ----------
 local sandbox = {}
 
-for _, name in ipairs({ "print", "warn", "error", "pcall", "xpcall", "assert", "select", "type", "typeof",
-                        "tostring", "tonumber", "pairs", "ipairs", "next", "rawget", "rawset", "rawequal",
-                        "rawlen", "setmetatable", "getmetatable", "unpack", "require", "collectgarbage" }) do
-    sandbox[name] = _G[name]
+local base_names = {
+    "print", "warn", "error", "pcall", "xpcall", "assert", "select", "type", "typeof",
+    "tostring", "tonumber", "pairs", "ipairs", "next", "rawget", "rawset", "rawequal",
+    "rawlen", "setmetatable", "getmetatable", "unpack", "require", "collectgarbage"
+}
+for _, name in ipairs(base_names) do
+    if _G[name] ~= nil then
+        sandbox[name] = _G[name]
+    end
 end
 
 sandbox.print = function(...) record(captured_prints, ...) end
@@ -301,20 +311,30 @@ local function build_output(run_status, elapsed)
     return table.concat(out)
 end
 
--- ---------- execução ----------
-local chunk, compile_err = load(SOURCE, "user_script")
+-- ---------- execução (defensiva) ----------
+local loader = load or loadstring
+if not loader then
+    print("ENVLOG2-BEGIN\n-- FATAL: no load function available\nENVLOG2-END")
+    return
+end
+
+local chunk, compile_err = loader(SOURCE, "user_script")
 if not chunk then
     print(build_output("compile error: " .. tostring(compile_err), 0))
     return
 end
 
-if setfenv then
+-- setfenv opcional (lune pode não ter)
+if type(setfenv) == "function" then
     pcall(setfenv, chunk, sandbox)
 end
 
-local start = os.clock()
+-- os.clock opcional
+local clock = (type(os) == "table" and type(os.clock) == "function") and os.clock or function() return 0 end
+
+local start = clock()
 local ok, runtime_err = pcall(chunk)
-local elapsed = os.clock() - start
+local elapsed = clock() - start
 
 local status
 if ok then
