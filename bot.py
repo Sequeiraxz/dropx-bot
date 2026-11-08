@@ -13,6 +13,8 @@ from collections import Counter
 from discord.ext import commands
 from aiohttp import web
 
+import antigrab
+
 TOKEN = os.environ.get("DISCORD_TOKEN")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +33,17 @@ HEADER = "Deobfuscate By DropX :)\n\n"
 BOT_NAME = "DropX"
 MAX_FILE = 5 * 1024 * 1024
 
+# Quanto tempo o resultado fica no chat antes de ser apagado (segundos)
+DELETE_AFTER = int(os.environ.get("DELETE_AFTER", "600"))
+# Anti-grabber: 3 tentativas bloqueadas => bloqueio temporário
+STRIKE_LIMIT = 3
+STRIKE_LOCK_SECONDS = 30 * 60
+
+# Emoji da marca (substitui a lua). O bot tem de estar no servidor do emoji.
+BRAND_EMOJI_ID = 1569037087439724644
+BRAND = f"<:dropx:{BRAND_EMOJI_ID}>"
+BRAND_PARTIAL = discord.PartialEmoji(name="dropx", id=BRAND_EMOJI_ID)
+
 WEAREDEVS_EMOJI_ID = 1565837351769481216
 MOONSEC_EMOJI_ID = 1566041038852718692
 MOONVEIL_EMOJI_ID = 1566062539962323085
@@ -40,11 +53,13 @@ WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128
 MOONSEC_ICON = f"https://cdn.discordapp.com/emojis/{MOONSEC_EMOJI_ID}.png"
 MOONVEIL_ICON = f"https://cdn.discordapp.com/emojis/{MOONVEIL_EMOJI_ID}.png"
 LUAOBF_ICON = f"https://cdn.discordapp.com/emojis/{LUAOBF_EMOJI_ID}.png"
+BRAND_ICON = f"https://cdn.discordapp.com/emojis/{BRAND_EMOJI_ID}.png"
 
 # ---------- ESTILO ----------
 C_BRAND = 0x2ECC71
 C_OK = 0x2ECC71
 C_WORK = 0xF1C40F
+C_WARN = 0xE67E22
 C_ERR = 0xE74C3C
 C_DARK = 0x2B2D31
 
@@ -62,12 +77,13 @@ def bar(score10: int) -> str:
     return "▰" * score10 + "▱" * (10 - score10)
 
 
-def fmt_bytes(n: int) -> str:
-    for unit in ("B", "KB", "MB"):
-        if n < 1024 or unit == "MB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n} B"
+def fmt_bytes(n: float) -> str:
+    if n < 1024:
+        return f"{int(n)} B"
+    n /= 1024
+    if n < 1024:
+        return f"{n:.1f} KB"
+    return f"{n / 1024:.1f} MB"
 
 
 def fmt_uptime(sec: int) -> str:
@@ -82,37 +98,102 @@ def fmt_uptime(sec: int) -> str:
     return " ".join(parts)
 
 
+def brand_footer(extra: str = "") -> str:
+    return f"Made by {BOT_NAME}" + (f" · {extra}" if extra else "")
+
+
 def make_embed(title, description=None, color=C_BRAND, footer=True):
     e = discord.Embed(title=title, description=description, color=color)
+    if bot.user:
+        e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     if footer:
-        e.set_footer(text=f"Made by {BOT_NAME}")
+        e.set_footer(text=brand_footer())
     return e
 
 
-def working_embed(tool_label: str):
-    return make_embed("⏳ Working...", f"Running **{tool_label}**\nThis can take a few seconds.", C_WORK)
+def pipeline_embed(title: str, steps: list, active: int, who_id: int = None, color=C_WORK):
+    lines = []
+    for i, s in enumerate(steps):
+        if i < active:
+            lines.append(f"✅ {s}")
+        elif i == active:
+            lines.append(f"⏳ **{s}**")
+        else:
+            lines.append(f"▫️ {s}")
+    desc = "\n".join(lines)
+    if who_id:
+        desc += f"\n\nRequested by <@{who_id}>"
+    return make_embed(f"{BRAND} {title}", desc, color)
 
 
-def error_embed(tool_label: str, err: str):
-    e = make_embed("❌ Failed", f"**{tool_label}** could not finish.", C_ERR)
+def error_embed(tool_label: str, err: str, who_id: int = None):
+    e = make_embed("❌ Failed", f"**{tool_label}** could not finish." + (f"\nRequested by <@{who_id}>" if who_id else ""), C_ERR)
     e.add_field(name="Details", value=f"```\n{(err or 'no details')[-900:]}\n```", inline=False)
+    e.set_footer(text=brand_footer("this message will be deleted in 60s"))
     return e
 
 
-def result_embed(tool_label: str, size: int, elapsed: float):
-    e = make_embed("✅ Done", None, C_OK)
-    e.add_field(name="Tool", value=tool_label, inline=True)
+def security_text(res: "antigrab.ScanResult") -> str:
+    lvl = res.level
+    if lvl == "clean":
+        return "✅ No grabber patterns found"
+    if lvl == "info":
+        return "ℹ️ " + ", ".join(f.label for f in res.findings[:2])
+    if lvl == "suspicious":
+        return "⚠️ Suspicious: " + ", ".join(f.label for f in res.findings[:3])
+    return "🚫 Grabber patterns: " + ", ".join(f.label for f in res.findings[:3])
+
+
+def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: int, color=C_OK):
+    deletes_at = int(time.time()) + DELETE_AFTER
+    warn = scan_res is not None and scan_res.level in ("suspicious", "blocked")
+    e = discord.Embed(
+        title=f"{BRAND} Done" if not warn else f"{BRAND} Done · ⚠️ review the output",
+        description=f"Requested by <@{who_id}>",
+        color=C_WARN if warn else color,
+    )
+    e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
+    e.add_field(name="🛠️ Tool", value=tool_label, inline=True)
+    e.add_field(name="📦 Size", value=fmt_bytes(size), inline=True)
+    e.add_field(name="⏱️ Time", value=f"{elapsed:.1f}s", inline=True)
+    if scan_res is not None:
+        e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
+    e.add_field(name="🗑️ Auto-delete", value=f"<t:{deletes_at}:R>", inline=False)
+    e.set_footer(text=brand_footer())
+    return e
+
+
+def blocked_embed(res, who_id: int, size: int):
+    e = discord.Embed(
+        title="🛡️ Anti-Grabber · Blocked",
+        description=(
+            f"<@{who_id}>, this script looks like a **token / credential grabber** and was **not processed**.\n"
+            "If you pasted your own token by mistake, reset it right now."
+        ),
+        color=C_ERR,
+    )
+    e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
+    e.add_field(name="Risk", value=f"`{bar(res.score // 10)}` {res.score}/100", inline=True)
     e.add_field(name="Size", value=fmt_bytes(size), inline=True)
-    e.add_field(name="Time", value=f"{elapsed:.1f}s", inline=True)
+    lines = [f"• **{f.label}**" + (f"\n  `{f.sample}`" if f.sample else "") for f in res.findings[:6]]
+    e.add_field(name="Findings", value="\n".join(lines)[:1000] or "-", inline=False)
+    e.set_footer(text=brand_footer("your message was removed"))
     return e
 
 
 # ---------- CONFIG ----------
+DEFAULT_CONFIG = {"channel_id": None, "antigrab": True, "log_channel_id": None}
+
+
 def load_config():
+    cfg = dict(DEFAULT_CONFIG)
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    return {"channel_id": None}
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg.update(json.load(f))
+        except Exception:
+            pass
+    return cfg
 
 
 def save_config(cfg):
@@ -129,8 +210,31 @@ bot.remove_command("help")
 
 _moonsec_lock = asyncio.Lock()
 _moonveil_lock = asyncio.Lock()
+_bg_tasks = set()
+_strikes = {}  # user_id -> {"count": int, "until": float}
 
-# ---------- DETECTOR ----------
+# ---------- MENSAGENS: apagar / agendar ----------
+async def safe_delete(msg, delay: float = 0):
+    try:
+        if delay:
+            await asyncio.sleep(delay)
+        await msg.delete()
+    except Exception:
+        pass
+
+
+def schedule_delete(msg, delay: float):
+    task = asyncio.create_task(safe_delete(msg, delay))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+async def send(ctx: commands.Context, **kwargs):
+    """Envia para o canal (sem 'reply', porque a mensagem do utilizador é apagada)."""
+    return await ctx.channel.send(**kwargs)
+
+
+# ---------- DETECTOR DE OFUSCADOR ----------
 SIGNATURES = {
     "Prometheus": [
         (20, re.compile(r'return\s*\(function\s*\(\.\.\.\)\s*local\s+\w\s*=\s*\{')),
@@ -178,27 +282,6 @@ _WEAREDEVS_SIGNALS = [
 ]
 
 
-def calc_entropy(data: str) -> float:
-    if not data:
-        return 0.0
-    freq = Counter(data)
-    length = len(data)
-    return -sum((c / length) * math.log2(c / length) for c in freq.values())
-
-
-def stat_features(code: str) -> dict:
-    lines = code.splitlines()
-    total_chars = len(code)
-    if total_chars == 0:
-        return {}
-    num_esc = len(re.findall(r'\\[0-9]{2,3}', code))
-    return {
-        "entropy": calc_entropy(code),
-        "numeric_escape_density": num_esc / max(total_chars / 1000, 1),
-        "avg_line_length": (sum(len(l) for l in lines) / len(lines)) if lines else 0,
-    }
-
-
 def _any_match(patterns, code):
     for pat in patterns:
         try:
@@ -209,17 +292,9 @@ def _any_match(patterns, code):
     return False
 
 
-def is_wearedevs(code: str) -> bool:
-    return _any_match(_WEAREDEVS_SIGNALS, code)
-
-
-def is_definitely_obfuscated(code: str) -> bool:
-    return _any_match(_DEFINITELY_OBF, code)
-
-
 def detect(code):
-    definitely = is_definitely_obfuscated(code)
-    wad = is_wearedevs(code)
+    definitely = _any_match(_DEFINITELY_OBF, code)
+    wad = _any_match(_WEAREDEVS_SIGNALS, code)
     raw_scores = {}
     for obf_name, patterns in SIGNATURES.items():
         score = 0.0
@@ -234,8 +309,6 @@ def detect(code):
         if obf_name == "Prometheus" and wad:
             score -= 40
         raw_scores[obf_name] = max(score, 0.0)
-    if not raw_scores:
-        return [("Custom / Unknown", 0.0)]
     top = sorted(raw_scores.items(), key=lambda x: x[1], reverse=True)
     top_name, top_score = top[0]
     if top_score < 20:
@@ -466,6 +539,119 @@ async def fetch_url(url: str):
         return None, str(e)
 
 
+# ---------- ANTI-GRABBER ----------
+def is_locked(user_id: int) -> int:
+    """Devolve os segundos que faltam de bloqueio (0 = livre)."""
+    s = _strikes.get(user_id)
+    if not s:
+        return 0
+    left = int(s.get("until", 0) - time.time())
+    return max(0, left)
+
+
+def add_strike(user_id: int) -> int:
+    s = _strikes.setdefault(user_id, {"count": 0, "until": 0})
+    s["count"] += 1
+    if s["count"] >= STRIKE_LIMIT:
+        s["until"] = time.time() + STRIKE_LOCK_SECONDS
+        s["count"] = 0
+    return s["count"]
+
+
+async def log_block(ctx: commands.Context, res, size: int, command: str):
+    chan_id = config.get("log_channel_id")
+    if not chan_id:
+        return
+    chan = bot.get_channel(chan_id)
+    if chan is None:
+        return
+    e = discord.Embed(title="🛡️ Anti-Grabber · blocked upload", color=C_ERR)
+    e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
+    e.add_field(name="User", value=f"{ctx.author.mention} (`{ctx.author.id}`)", inline=True)
+    e.add_field(name="Command", value=f"`.{command}`", inline=True)
+    e.add_field(name="Risk", value=f"{res.score}/100 · {fmt_bytes(size)}", inline=True)
+    lines = [f"• {f.label}" + (f" — `{f.sample}`" if f.sample else "") for f in res.findings[:8]]
+    e.add_field(name="Findings", value="\n".join(lines)[:1000] or "-", inline=False)
+    e.set_footer(text=brand_footer())
+    try:
+        await chan.send(embed=e)
+    except Exception:
+        pass
+
+
+# ---------- PREPARAÇÃO COMUM DOS COMANDOS ----------
+async def prepare(ctx: commands.Context, url, label: str, steps: list, strict_channel: bool = True):
+    """
+    1) valida canal e bloqueio  2) lê o ficheiro  3) APAGA a mensagem do utilizador
+    4) mostra o estado  5) corre o anti-grabber.
+    Devolve (source, status_msg, scan_result) ou None se terminou aqui.
+    """
+    # canal
+    if config.get("channel_id") is None:
+        await safe_delete(ctx.message)
+        m = await send(ctx, embed=make_embed("Bot not hosted", "Use `.alojar` in the channel you want to use.", C_ERR))
+        schedule_delete(m, 8)
+        return None
+    if strict_channel and ctx.channel.id != config["channel_id"]:
+        await safe_delete(ctx.message)
+        m = await send(ctx, embed=make_embed("Wrong channel", f"Use <#{config['channel_id']}>.", C_ERR))
+        schedule_delete(m, 6)
+        return None
+
+    # bloqueio temporário
+    left = is_locked(ctx.author.id)
+    if left:
+        await safe_delete(ctx.message)
+        m = await send(ctx, embed=make_embed(
+            "🛡️ Temporarily blocked",
+            f"{ctx.author.mention}, too many blocked uploads. Try again in **{left // 60 + 1} min**.", C_ERR))
+        schedule_delete(m, 10)
+        return None
+
+    # ficheiro (tem de ser lido ANTES de apagar a mensagem)
+    source, err = await get_source(ctx, url)
+    await safe_delete(ctx.message)
+    if source is None:
+        m = await send(ctx, embed=make_embed("Could not read the script", f"{ctx.author.mention}: {err}", C_ERR))
+        schedule_delete(m, 8)
+        return None
+
+    status = await send(ctx, embed=pipeline_embed(label, steps, 0, ctx.author.id))
+
+    res = antigrab.scan(source) if config.get("antigrab", True) else antigrab.ScanResult()
+    if res.level == "blocked":
+        add_strike(ctx.author.id)
+        await status.edit(embed=blocked_embed(res, ctx.author.id, len(source)))
+        schedule_delete(status, 90)
+        await log_block(ctx, res, len(source), ctx.command.name if ctx.command else "?")
+        return None
+    return source, status, res
+
+
+async def get_source(ctx: commands.Context, url: str = None):
+    if ctx.message.attachments:
+        att = ctx.message.attachments[0]
+        if not att.filename.endswith((".txt", ".lua", ".luau")):
+            return None, "Attachment must be .txt/.lua/.luau"
+        if att.size > MAX_FILE:
+            return None, "File > 5 MiB."
+        return await att.read(), ""
+    elif url:
+        source, err = await fetch_url(url.strip())
+        if source is None:
+            return None, f"Could not fetch URL: {err}"
+        if len(source) > MAX_FILE:
+            return None, "File > 5 MiB."
+        return source, ""
+    return None, "Usage: attach a file or send a URL."
+
+
+def finalize_output(res_bytes: bytes):
+    """Anti-grabber no RESULTADO (apanha grabbers ofuscados): esconde tokens e avisa."""
+    scan_res = antigrab.scan(res_bytes) if config.get("antigrab", True) else antigrab.ScanResult()
+    return antigrab.redact_bytes(res_bytes), scan_res
+
+
 # ---------- FERRAMENTAS (botões gerados a partir desta lista) ----------
 TOOLS = [
     {"key": "Prometheus", "label": "Prometheus", "run": run_deobf, "file": "deobfuscated.txt",
@@ -486,6 +672,8 @@ TOOLS = [
      "emoji": "🧪", "row": 1, "match": ()},
 ]
 
+STEPS_RUN = ["Security scan", "Running tool", "Sending result"]
+
 
 class ToolButton(discord.ui.Button):
     def __init__(self, tool: dict, recommended: bool = False):
@@ -498,35 +686,44 @@ class ToolButton(discord.ui.Button):
         self.tool = tool
 
     async def callback(self, interaction: discord.Interaction):
+        label = self.tool["label"]
+        who = interaction.user.id
         try:
             src = getattr(self.view, "source", None)
             if not src:
                 return await interaction.response.send_message("Script not found.", ephemeral=True)
             self.view.stop()
-            await interaction.response.edit_message(embed=working_embed(self.tool["label"]), view=None)
+            msg = interaction.message
+            await interaction.response.edit_message(embed=pipeline_embed(label, STEPS_RUN, 1, who), view=None)
             started = time.time()
             res, err = await self.tool["run"](src)
             elapsed = time.time() - started
             if not res:
-                return await interaction.edit_original_response(embed=error_embed(self.tool["label"], err))
-            file = discord.File(fp=io.BytesIO(res), filename=self.tool["file"])
+                await interaction.edit_original_response(embed=error_embed(label, err, who))
+                return schedule_delete(msg, 60)
+            await interaction.edit_original_response(embed=pipeline_embed(label, STEPS_RUN, 2, who))
+            out, scan_res = finalize_output(res)
+            file = discord.File(fp=io.BytesIO(out), filename=self.tool["file"])
             await interaction.edit_original_response(
-                embed=result_embed(self.tool["label"], len(res), elapsed),
+                embed=result_embed(label, len(out), elapsed, scan_res, who),
                 attachments=[file],
             )
+            schedule_delete(msg, DELETE_AFTER)
         except Exception as e:
             traceback.print_exc()
             try:
-                await interaction.edit_original_response(embed=error_embed(self.tool["label"], repr(e)))
+                await interaction.edit_original_response(embed=error_embed(label, repr(e), who))
+                schedule_delete(interaction.message, 60)
             except Exception:
                 pass
 
 
 class DeobfView(discord.ui.View):
     def __init__(self, source: bytes, owner_id: int, detected: str = ""):
-        super().__init__(timeout=600)
+        super().__init__(timeout=DELETE_AFTER)
         self.source = source
         self.owner_id = owner_id
+        self.message = None
         for tool in TOOLS:
             self.add_item(ToolButton(tool, recommended=detected in tool["match"]))
 
@@ -536,17 +733,23 @@ class DeobfView(discord.ui.View):
             return False
         return True
 
+    async def on_timeout(self):
+        if self.message:
+            await safe_delete(self.message)
+
 
 # ---------- HELP (com menu dropdown) ----------
 CATEGORIES = {
-    "Utilities": {"emoji": "⚙️", "desc": "Setup and information"},
-    "Tools": {"emoji": "🌙", "desc": "Deobfuscation and analysis"},
+    "Utilities": {"emoji_text": "⚙️", "emoji_obj": "⚙️"},
+    "Tools": {"emoji_text": BRAND, "emoji_obj": BRAND_PARTIAL},
 }
 
 COMMANDS = {
     "alojar": ("Utilities", ".alojar", "Host the bot in the current channel. Administrators only."),
     "stats": ("Utilities", ".stats", "Show uptime and latency."),
     "help": ("Utilities", ".help [command]", "Show this menu, or details about one command."),
+    "antigrab": ("Utilities", ".antigrab [on|off]", "Turn the Anti-Grabber on or off, or show its status. Administrators only."),
+    "setlogs": ("Utilities", ".setlogs", "Use this channel to log blocked uploads. Administrators only."),
     "deobf": ("Tools", ".deobf <url | attachment>",
               "Detects the obfuscator and shows the matching deobfuscation buttons plus the env loggers."),
     "detector": ("Tools", ".detector <url | attachment>", "Only detects which obfuscator was used."),
@@ -562,16 +765,18 @@ def category_commands(cat: str):
 def help_embed(cat: str, user: discord.abc.User = None):
     info = CATEGORIES[cat]
     e = discord.Embed(
-        title="Helper",
+        title=f"{BRAND} Helper",
         description="Use `.help <command>` for details about a specific command.",
         color=C_BRAND,
     )
+    e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     chips = " · ".join(f"`{n}`" for n in category_commands(cat))
-    e.add_field(name=f"{info['emoji']} {cat}", value=chips, inline=False)
-    footer = f"Made by {BOT_NAME}"
-    if user is not None:
-        footer += f" · requested by {user.display_name}"
-    e.set_footer(text=footer)
+    e.add_field(name=f"{info['emoji_text']} {cat}", value=chips, inline=False)
+    state = "🟢 active" if config.get("antigrab", True) else "🔴 off"
+    e.add_field(name="🛡️ Anti-Grabber", value=f"{state} · scripts with token-grabber patterns are blocked", inline=False)
+    e.add_field(name="🗑️ Cleanup", value=f"Your command is removed and results disappear after {DELETE_AFTER // 60} min.", inline=False)
+    e.set_thumbnail(url=BRAND_ICON)
+    e.set_footer(text=brand_footer(f"requested by {user.display_name}" if user else ""))
     return e
 
 
@@ -581,7 +786,7 @@ class HelpSelect(discord.ui.Select):
             discord.SelectOption(
                 label=cat,
                 description=f"{len(category_commands(cat))} command(s)",
-                emoji=info["emoji"],
+                emoji=info["emoji_obj"],
                 default=(cat == current),
             )
             for cat, info in CATEGORIES.items()
@@ -590,14 +795,16 @@ class HelpSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         cat = self.values[0]
-        view = HelpView(self.view.owner_id, cat, interaction.user)
+        view = HelpView(self.view.owner_id, cat)
+        view.message = interaction.message
         await interaction.response.edit_message(embed=help_embed(cat, interaction.user), view=view)
 
 
 class HelpView(discord.ui.View):
-    def __init__(self, owner_id: int, current: str = "Tools", user=None):
+    def __init__(self, owner_id: int, current: str = "Tools"):
         super().__init__(timeout=180)
         self.owner_id = owner_id
+        self.message = None
         self.add_item(HelpSelect(current))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -606,137 +813,158 @@ class HelpView(discord.ui.View):
             return False
         return True
 
-
-# ---------- UTILIDADES ----------
-async def get_source(ctx: commands.Context, url: str = None):
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        if not att.filename.endswith((".txt", ".lua", ".luau")):
-            return None, "Attachment must be .txt/.lua/.luau"
-        if att.size > MAX_FILE:
-            return None, "File > 5 MiB."
-        return await att.read(), ""
-    elif url:
-        source, err = await fetch_url(url.strip())
-        if source is None:
-            return None, f"Could not fetch URL: {err}"
-        if len(source) > MAX_FILE:
-            return None, "File > 5 MiB."
-        return source, ""
-    return None, "Usage: attach a file or send a URL."
-
-
-async def channel_ok(ctx: commands.Context, quiet=False) -> bool:
-    if config["channel_id"] is None:
-        await ctx.reply(embed=make_embed("Bot not hosted", "Use `.alojar` in the channel you want to use.", C_ERR))
-        return False
-    if ctx.channel.id != config["channel_id"] and not quiet:
-        await ctx.reply(embed=make_embed("Wrong channel", f"Use <#{config['channel_id']}>.", C_ERR), delete_after=6)
-        return False
-    return True
+    async def on_timeout(self):
+        if self.message:
+            await safe_delete(self.message)
 
 
 # ---------- COMANDOS ----------
 @bot.command(name="alojar")
 @commands.has_permissions(administrator=True)
 async def alojar(ctx: commands.Context):
+    await safe_delete(ctx.message)
     config["channel_id"] = ctx.channel.id
     save_config(config)
-    await ctx.reply(embed=make_embed("✅ Hosted", f"The bot is now hosted in {ctx.channel.mention}.", C_OK), delete_after=10)
+    m = await send(ctx, embed=make_embed(f"{BRAND} Hosted", f"The bot is now hosted in {ctx.channel.mention}.", C_OK))
+    schedule_delete(m, 10)
+
+
+@bot.command(name="setlogs")
+@commands.has_permissions(administrator=True)
+async def setlogs(ctx: commands.Context):
+    await safe_delete(ctx.message)
+    config["log_channel_id"] = ctx.channel.id
+    save_config(config)
+    m = await send(ctx, embed=make_embed("🛡️ Logs enabled", f"Blocked uploads will be logged in {ctx.channel.mention}.", C_OK))
+    schedule_delete(m, 10)
+
+
+@bot.command(name="antigrab")
+@commands.has_permissions(administrator=True)
+async def antigrab_cmd(ctx: commands.Context, mode: str = None):
+    await safe_delete(ctx.message)
+    if mode and mode.lower() in ("on", "off"):
+        config["antigrab"] = mode.lower() == "on"
+        save_config(config)
+    state = "🟢 **active**" if config.get("antigrab", True) else "🔴 **off**"
+    logs = f"<#{config['log_channel_id']}>" if config.get("log_channel_id") else "not set (`.setlogs`)"
+    e = make_embed("🛡️ Anti-Grabber", None, C_OK if config.get("antigrab", True) else C_ERR)
+    e.add_field(name="Status", value=state, inline=True)
+    e.add_field(name="Log channel", value=logs, inline=True)
+    e.add_field(name="Blocks", value="Discord tokens, token storage paths, `/users/@me` lookups, encrypted token markers, "
+                                     "Roblox cookies, browser credential paths, webhook exfiltration + shell/AppData access.", inline=False)
+    m = await send(ctx, embed=e)
+    schedule_delete(m, 30)
 
 
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
-    if not await channel_ok(ctx):
+    prep = await prepare(ctx, url, "Deobfuscator", ["Security scan", "Detecting obfuscator", "Ready"])
+    if prep is None:
         return
-    source, err = await get_source(ctx, url)
-    if source is None:
-        return await ctx.reply(embed=make_embed("Could not read the script", err, C_ERR), delete_after=8)
+    source, status, scan_res = prep
 
     results = detect(source.decode("utf-8", "ignore"))
     top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
     color, icon = OBF_STYLE.get(top_name, (C_BRAND, None))
     score = score_1_to_10(top_pct) if top_pct > 0 else 0
 
-    e = discord.Embed(title="🔓 DropX Deobfuscator", color=color)
-    e.add_field(name="Detected", value=f"**{top_name}**", inline=True)
-    e.add_field(name="Confidence", value=f"`{bar(score)}` {score}/10", inline=True)
-    e.add_field(name="Size", value=fmt_bytes(len(source)), inline=True)
-
+    e = discord.Embed(title=f"{BRAND} DropX Deobfuscator", color=color)
+    e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
+    e.description = f"Requested by {ctx.author.mention}"
+    e.add_field(name="🔍 Detected", value=f"**{top_name}**", inline=True)
+    e.add_field(name="📊 Confidence", value=f"`{bar(score)}` {score}/10", inline=True)
+    e.add_field(name="📦 Size", value=fmt_bytes(len(source)), inline=True)
     others = [f"`{n}` {score_1_to_10(p)}/10" for n, p in results[1:4] if p > 0]
     if others:
         e.add_field(name="Other matches", value=" · ".join(others), inline=False)
-
+    e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
     if any(top_name in t["match"] for t in TOOLS):
         hint = "The green button is the recommended tool for this script."
     else:
         hint = "No obfuscator recognised. Try any deobfuscator or the Env Loggers."
-    e.add_field(name="Next step", value=hint, inline=False)
+    e.add_field(name="➡️ Next step", value=hint, inline=False)
+    e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
     if icon:
         e.set_thumbnail(url=icon)
-    e.set_footer(text=f"Made by {BOT_NAME} · requested by {ctx.author.display_name}")
-    await ctx.reply(embed=e, view=DeobfView(source, ctx.author.id, top_name))
+    e.set_footer(text=brand_footer())
+
+    view = DeobfView(source, ctx.author.id, top_name)
+    view.message = status
+    await status.edit(embed=e, view=view)
 
 
 @bot.command(name="detector")
 async def detector(ctx: commands.Context, *, url: str = None):
-    if not await channel_ok(ctx, quiet=True):
+    prep = await prepare(ctx, url, "Detector", ["Security scan", "Detecting obfuscator", "Ready"], strict_channel=False)
+    if prep is None:
         return
-    source, err = await get_source(ctx, url)
-    if source is None:
-        return await ctx.reply(embed=make_embed("Could not read the script", err, C_ERR))
+    source, status, scan_res = prep
     results = detect(source.decode("utf-8", "ignore"))
     lines = [f"**{n}**\n`{bar(score_1_to_10(p))}` {score_1_to_10(p)}/10" for n, p in results[:5] if p > 0]
     top_name = results[0][0] if results else "Custom / Unknown"
     color, icon = OBF_STYLE.get(top_name, (C_DARK, None))
-    e = make_embed("🔎 Detector", "\n\n".join(lines) or "No obfuscator detected.", color)
+    e = make_embed(f"{BRAND} Detector", "\n\n".join(lines) or "No obfuscator detected.", color)
+    e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
+    e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
     if icon and lines:
         e.set_thumbnail(url=icon)
-    await ctx.reply(embed=e)
+    await status.edit(embed=e)
+    schedule_delete(status, DELETE_AFTER)
 
 
 @bot.command(name="stats")
 async def stats(ctx: commands.Context):
+    await safe_delete(ctx.message)
     uptime = int(time.time() - getattr(bot, "launch_time", time.time()))
-    e = make_embed("📊 Stats", None, C_BRAND)
-    e.add_field(name="Uptime", value=fmt_uptime(uptime), inline=True)
-    e.add_field(name="Latency", value=f"{round(bot.latency * 1000, 1)} ms", inline=True)
-    e.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
-    await ctx.reply(embed=e)
+    e = make_embed(f"{BRAND} Stats", None, C_BRAND)
+    e.add_field(name="⏳ Uptime", value=fmt_uptime(uptime), inline=True)
+    e.add_field(name="📶 Latency", value=f"{round(bot.latency * 1000, 1)} ms", inline=True)
+    e.add_field(name="🌐 Servers", value=str(len(bot.guilds)), inline=True)
+    m = await send(ctx, embed=e)
+    schedule_delete(m, 60)
 
 
 @bot.command(name="help")
 async def help_cmd(ctx: commands.Context, *, command: str = None):
+    await safe_delete(ctx.message)
     if command:
         name = command.strip().lstrip(".").lower()
         info = COMMANDS.get(name)
         if not info:
-            return await ctx.reply(embed=make_embed("Unknown command", f"`{name}` does not exist. Use `.help`.", C_ERR), delete_after=8)
+            m = await send(ctx, embed=make_embed("Unknown command", f"`{name}` does not exist. Use `.help`.", C_ERR))
+            return schedule_delete(m, 8)
         cat, usage, desc = info
-        e = make_embed(f"Command · {name}", desc, C_BRAND)
+        e = make_embed(f"{BRAND} Command · {name}", desc, C_BRAND)
         e.add_field(name="Usage", value=f"`{usage}`", inline=False)
-        e.add_field(name="Category", value=f"{CATEGORIES[cat]['emoji']} {cat}", inline=True)
-        return await ctx.reply(embed=e)
+        e.add_field(name="Category", value=f"{CATEGORIES[cat]['emoji_text']} {cat}", inline=True)
+        m = await send(ctx, embed=e)
+        return schedule_delete(m, 90)
     start = "Tools"
-    await ctx.reply(embed=help_embed(start, ctx.author), view=HelpView(ctx.author.id, start))
+    view = HelpView(ctx.author.id, start)
+    view.message = await send(ctx, embed=help_embed(start, ctx.author), view=view)
 
 
 async def _logger_command(ctx: commands.Context, url, runner, label, filename):
-    if not await channel_ok(ctx):
+    prep = await prepare(ctx, url, label, STEPS_RUN)
+    if prep is None:
         return
-    source, err = await get_source(ctx, url)
-    if source is None:
-        return await ctx.reply(embed=make_embed("Could not read the script", err, C_ERR), delete_after=8)
-    msg = await ctx.reply(embed=working_embed(label))
+    source, status, _ = prep
+    who = ctx.author.id
+    await status.edit(embed=pipeline_embed(label, STEPS_RUN, 1, who))
     started = time.time()
     res, err = await runner(source)
     elapsed = time.time() - started
     if not res:
-        return await msg.edit(embed=error_embed(label, err))
-    await msg.edit(
-        embed=result_embed(label, len(res), elapsed),
-        attachments=[discord.File(fp=io.BytesIO(res), filename=filename)],
+        await status.edit(embed=error_embed(label, err, who))
+        return schedule_delete(status, 60)
+    await status.edit(embed=pipeline_embed(label, STEPS_RUN, 2, who))
+    out, scan_res = finalize_output(res)
+    await status.edit(
+        embed=result_embed(label, len(out), elapsed, scan_res, who),
+        attachments=[discord.File(fp=io.BytesIO(out), filename=filename)],
     )
+    schedule_delete(status, DELETE_AFTER)
 
 
 @bot.command(name="l")
@@ -754,12 +982,14 @@ async def env_logger_2_cmd(ctx: commands.Context, *, url: str = None):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
+    await safe_delete(ctx.message)
     if isinstance(error, commands.MissingPermissions):
         msg = "You need administrator permission for this command."
     else:
         msg = f"`{error!r}`"
     try:
-        await ctx.reply(embed=make_embed("Error", msg, C_ERR), delete_after=10)
+        m = await send(ctx, embed=make_embed("Error", msg, C_ERR))
+        schedule_delete(m, 10)
     except Exception:
         pass
 
