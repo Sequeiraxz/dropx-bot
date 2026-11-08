@@ -128,14 +128,14 @@ def progress_embed(title: str, pct: float, stage: str, who_id: int = None, color
 
 
 async def _animate(editor, title: str, who_id: int, stage: str, start: float, end: float,
-                   tau: float = 12.0, interval: float = 2.0, first_delay: float = 0.0):
-    """Faz a barra avançar de forma suave (nunca chega ao fim sozinha) até ser cancelada."""
+                   est: float = 10.0, interval: float = 1.5, first_delay: float = 0.0):
+    """Faz a barra avançar de forma suave até ~90% (usa a duração típica `est` da ferramenta)."""
     try:
         if first_delay:
             await asyncio.sleep(first_delay)
         t0 = time.time()
         while True:
-            pct = start + (end - start) * (1 - math.exp(-(time.time() - t0) / tau))
+            pct = start + (end - start) * (1 - math.exp(-3.0 * (time.time() - t0) / max(est, 2.0)))
             try:
                 await editor(progress_embed(title, pct, stage, who_id))
             except Exception:
@@ -148,7 +148,8 @@ async def _animate(editor, title: str, who_id: int, stage: str, start: float, en
 async def run_with_progress(editor, label: str, who_id: int, runner, source: bytes, already_shown: bool = False):
     """Corre a ferramenta enquanto anima a barra. Devolve (resultado, erro, segundos_da_ferramenta)."""
     anim = asyncio.create_task(
-        _animate(editor, label, who_id, "Running tool", 15, 92, first_delay=2.0 if already_shown else 0.0)
+        _animate(editor, label, who_id, "Running tool", 15, 92,
+                 est=_tool_avg.get(label, 10.0), first_delay=1.5 if already_shown else 0.0)
     )
     started = time.time()
     try:
@@ -157,7 +158,22 @@ async def run_with_progress(editor, label: str, who_id: int, runner, source: byt
         anim.cancel()
         # espera pelo fim da animação para que nenhuma edição antiga chegue depois do resultado
         await asyncio.gather(anim, return_exceptions=True)
-    return res, err, time.time() - started
+    took = time.time() - started
+    if res:
+        old = _tool_avg.get(label)
+        _tool_avg[label] = took if old is None else 0.6 * old + 0.4 * took
+    return res, err, took
+
+
+async def finish_and_scan(editor, label: str, who_id: int, res: bytes):
+    """Mostra a barra a 100% enquanto o scan do resultado corre em paralelo."""
+    async def _full():
+        try:
+            await editor(progress_embed(label, 100, "Delivering", who_id, C_OK))
+        except Exception:
+            pass
+    out_scan, _, _ = await asyncio.gather(finalize_output(res), _full(), asyncio.sleep(0.4))
+    return out_scan
 
 
 def error_embed(tool_label: str, err: str, who_id: int = None):
@@ -246,6 +262,7 @@ _moonsec_lock = asyncio.Lock()
 _moonveil_lock = asyncio.Lock()
 _bg_tasks = set()
 _strikes = {}  # user_id -> {"count": int, "until": float}
+_tool_avg = {}  # label -> duração média (s) da ferramenta, para calibrar a barra
 
 # ---------- MENSAGENS: apagar / agendar ----------
 async def safe_delete(msg, delay: float = 0):
@@ -792,7 +809,7 @@ class ToolButton(discord.ui.Button):
                 return schedule_delete(msg, 60)
 
             t1 = time.time()
-            out, scan_res = await finalize_output(res)
+            out, scan_res = await finish_and_scan(editor, label, who, res)
             t2 = time.time()
             file = discord.File(fp=io.BytesIO(out), filename=self.tool["file"])
             detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
@@ -972,13 +989,8 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     others = [f"`{n}` {score_1_to_10(p)}/10" for n, p in results[1:4] if p > 0]
     if others:
         e.add_field(name="Other matches", value=" · ".join(others), inline=False)
-    e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
-    if any(top_name in t["match"] for t in TOOLS):
-        hint = "The green button is the recommended tool for this script."
-    else:
-        hint = "No obfuscator recognised. Try one of the deobfuscators above, or use `.l` / `.l2` for the env loggers."
-    e.add_field(name="➡️ Next step", value=hint, inline=False)
-    e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
+    if scan_res.level != "clean":  # só mostra o Anti-Grabber quando há algo a avisar
+        e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
     if icon:
         e.set_thumbnail(url=icon)
     e.set_footer(text=brand_footer())
@@ -988,7 +1000,7 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     await status.edit(embed=e, view=view)
 
 
-@bot.command(name="detector")
+@bot.command(name="detector", aliases=["detect"])
 async def detector(ctx: commands.Context, *, url: str = None):
     prep = await prepare(ctx, url, "Detector", strict_channel=False)
     if prep is None:
@@ -1056,7 +1068,7 @@ async def _logger_command(ctx: commands.Context, url, runner, label, filename):
         return schedule_delete(status, 60)
 
     t1 = time.time()
-    out, scan_res = await finalize_output(res)
+    out, scan_res = await finish_and_scan(editor, label, who, res)
     t2 = time.time()
     detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
     await status.edit(
