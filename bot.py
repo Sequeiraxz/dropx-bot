@@ -35,6 +35,8 @@ MAX_FILE = 5 * 1024 * 1024
 
 # Quanto tempo o resultado fica no chat antes de ser apagado (segundos)
 DELETE_AFTER = int(os.environ.get("DELETE_AFTER", "600"))
+# Quanto tempo a mensagem do utilizador (com o link/ficheiro) fica no chat antes de ser apagada
+USER_MSG_DELETE_AFTER = int(os.environ.get("USER_MSG_DELETE_AFTER", "60"))
 # Anti-grabber: 3 tentativas bloqueadas => bloqueio temporário
 STRIKE_LIMIT = 3
 STRIKE_LOCK_SECONDS = 30 * 60
@@ -77,6 +79,12 @@ def bar(score10: int) -> str:
     return "▰" * score10 + "▱" * (10 - score10)
 
 
+def progress_bar(pct: float, width: int = 16) -> str:
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(width * pct / 100))
+    return "▰" * filled + "▱" * (width - filled)
+
+
 def fmt_bytes(n: float) -> str:
     if n < 1024:
         return f"{int(n)} B"
@@ -111,19 +119,45 @@ def make_embed(title, description=None, color=C_BRAND, footer=True):
     return e
 
 
-def pipeline_embed(title: str, steps: list, active: int, who_id: int = None, color=C_WORK):
-    lines = []
-    for i, s in enumerate(steps):
-        if i < active:
-            lines.append(f"✅ {s}")
-        elif i == active:
-            lines.append(f"⏳ **{s}**")
-        else:
-            lines.append(f"▫️ {s}")
-    desc = "\n".join(lines)
+def progress_embed(title: str, pct: float, stage: str, who_id: int = None, color=C_WORK):
+    """Barra de progresso a encher (substitui a antiga lista de passos)."""
+    desc = f"**{stage}**\n`{progress_bar(pct)}`  **{int(pct)}%**"
     if who_id:
         desc += f"\n\nRequested by <@{who_id}>"
     return make_embed(title, desc, color)
+
+
+async def _animate(editor, title: str, who_id: int, stage: str, start: float, end: float,
+                   tau: float = 12.0, interval: float = 2.0, first_delay: float = 0.0):
+    """Faz a barra avançar de forma suave (nunca chega ao fim sozinha) até ser cancelada."""
+    try:
+        if first_delay:
+            await asyncio.sleep(first_delay)
+        t0 = time.time()
+        while True:
+            pct = start + (end - start) * (1 - math.exp(-(time.time() - t0) / tau))
+            try:
+                await editor(progress_embed(title, pct, stage, who_id))
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        return
+
+
+async def run_with_progress(editor, label: str, who_id: int, runner, source: bytes, already_shown: bool = False):
+    """Corre a ferramenta enquanto anima a barra. Devolve (resultado, erro, segundos_da_ferramenta)."""
+    anim = asyncio.create_task(
+        _animate(editor, label, who_id, "Running tool", 15, 92, first_delay=2.0 if already_shown else 0.0)
+    )
+    started = time.time()
+    try:
+        res, err = await runner(source)
+    finally:
+        anim.cancel()
+        # espera pelo fim da animação para que nenhuma edição antiga chegue depois do resultado
+        await asyncio.gather(anim, return_exceptions=True)
+    return res, err, time.time() - started
 
 
 def error_embed(tool_label: str, err: str, who_id: int = None):
@@ -144,7 +178,7 @@ def security_text(res: "antigrab.ScanResult") -> str:
     return "🚫 Grabber patterns: " + ", ".join(f.label for f in res.findings[:3])
 
 
-def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: int, color=C_OK):
+def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: int, color=C_OK, detail: str = None):
     deletes_at = int(time.time()) + DELETE_AFTER
     warn = scan_res is not None and scan_res.level in ("suspicious", "blocked")
     e = discord.Embed(
@@ -155,7 +189,7 @@ def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: i
     e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     e.add_field(name="🛠️ Tool", value=tool_label, inline=True)
     e.add_field(name="📦 Size", value=fmt_bytes(size), inline=True)
-    e.add_field(name="⏱️ Time", value=f"{elapsed:.1f}s", inline=True)
+    e.add_field(name="⏱️ Time", value=f"{elapsed:.1f}s" + (f"\n`{detail}`" if detail else ""), inline=True)
     if scan_res is not None:
         e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
     e.add_field(name="🗑️ Auto-delete", value=f"<t:{deletes_at}:R>", inline=False)
@@ -235,13 +269,29 @@ async def send(ctx: commands.Context, **kwargs):
 
 
 # ---------- DETECTOR DE OFUSCADOR ----------
+class _OrderedFind:
+    """Equivalente a `a.*b.*c` (DOTALL) mas em tempo linear (sem backtracking catastrófico)."""
+
+    def __init__(self, *needles: str):
+        self.needles = needles
+
+    def search(self, code: str):
+        pos = 0
+        for n in self.needles:
+            i = code.find(n, pos)
+            if i < 0:
+                return None
+            pos = i + len(n)
+        return True
+
+
 SIGNATURES = {
     "Prometheus": [
         (20, re.compile(r'return\s*\(function\s*\(\.\.\.\)\s*local\s+\w\s*=\s*\{')),
         (45, re.compile(r"=\{\s*(?:'[A-Za-z0-9]+'\s*,\s*){4,}'[A-Za-z0-9]+'\s*\}")),
         (20, re.compile(r'\b\d{4,7}-\(-?\d{4,7}\)')),
         (15, re.compile(r'math\.floor')),
-        (10, re.compile(r'string\.char.*table\.concat.*string\.sub', re.DOTALL)),
+        (10, _OrderedFind("string.char", "table.concat", "string.sub")),
         (15, re.compile(r'for\s+\w+,\w+\s+in\s+ipairs\s*\(')),
         (10, re.compile(r'getfenv\s+and\s+getfenv\(\)\s+or\s+_ENV')),
         (20, re.compile(r'local\s+function\s+\w\s*\(\w\)\s*return\s+\w\[\w\+')),
@@ -361,6 +411,10 @@ async def run_deobf(source: bytes):
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=DEOBF_TIMEOUT)
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
             return None, f"timeout ({DEOBF_TIMEOUT}s)"
         except FileNotFoundError:
             return None, "Node.js not found"
@@ -387,6 +441,10 @@ async def run_moonsec_v2(source: bytes):
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
             except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
                 return None, "timeout (300s)"
             except FileNotFoundError:
                 return None, "Python/main.py not found"
@@ -421,6 +479,10 @@ async def run_moonveil(source: bytes):
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
             except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
                 return None, "timeout (180s)"
             except FileNotFoundError:
                 return None, "Python/moonveil not found"
@@ -448,6 +510,10 @@ async def run_luaobfuscator(source: bytes):
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
             except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
                 return None, "timeout (180s)"
             except FileNotFoundError:
                 return None, "Node.js not found"
@@ -506,6 +572,10 @@ async def _run_lune_logger(path: str, source: bytes, timeout: float):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
             return None, f"timeout ({int(timeout)}s)"
         except FileNotFoundError:
             return None, f"lune not found at {LUNE}"
@@ -580,10 +650,11 @@ async def log_block(ctx: commands.Context, res, size: int, command: str):
 
 
 # ---------- PREPARAÇÃO COMUM DOS COMANDOS ----------
-async def prepare(ctx: commands.Context, url, label: str, steps: list, strict_channel: bool = True):
+async def prepare(ctx: commands.Context, url, label: str, strict_channel: bool = True):
     """
-    1) valida canal e bloqueio  2) lê o ficheiro  3) APAGA a mensagem do utilizador
-    4) mostra o estado  5) corre o anti-grabber.
+    1) valida canal e bloqueio  2) lê o ficheiro  3) mostra a barra de progresso
+    4) corre o anti-grabber (em paralelo com o envio da mensagem)
+    5) agenda a remoção da mensagem do utilizador (USER_MSG_DELETE_AFTER s; imediata se for bloqueado).
     Devolve (source, status_msg, scan_result) ou None se terminou aqui.
     """
     # canal
@@ -610,21 +681,30 @@ async def prepare(ctx: commands.Context, url, label: str, steps: list, strict_ch
 
     # ficheiro (tem de ser lido ANTES de apagar a mensagem)
     source, err = await get_source(ctx, url)
-    await safe_delete(ctx.message)
     if source is None:
+        await safe_delete(ctx.message)
         m = await send(ctx, embed=make_embed("Could not read the script", f"{ctx.author.mention}: {err}", C_ERR))
         schedule_delete(m, 8)
         return None
 
-    status = await send(ctx, embed=pipeline_embed(label, steps, 0, ctx.author.id))
+    # envia a barra e faz o scan ao mesmo tempo (o scan corre fora do event loop)
+    status_task = asyncio.create_task(send(ctx, embed=progress_embed(label, 5, "Security scan", ctx.author.id)))
+    if config.get("antigrab", True):
+        res = await asyncio.to_thread(antigrab.scan, source)
+    else:
+        res = antigrab.ScanResult()
+    status = await status_task
 
-    res = antigrab.scan(source) if config.get("antigrab", True) else antigrab.ScanResult()
     if res.level == "blocked":
+        await safe_delete(ctx.message)  # script suspeito: remove já
         add_strike(ctx.author.id)
         await status.edit(embed=blocked_embed(res, ctx.author.id, len(source)))
         schedule_delete(status, 90)
         await log_block(ctx, res, len(source), ctx.command.name if ctx.command else "?")
         return None
+
+    # mensagem do utilizador fica visível pelo menos USER_MSG_DELETE_AFTER segundos
+    schedule_delete(ctx.message, USER_MSG_DELETE_AFTER)
     return source, status, res
 
 
@@ -646,10 +726,15 @@ async def get_source(ctx: commands.Context, url: str = None):
     return None, "Usage: attach a file or send a URL."
 
 
-def finalize_output(res_bytes: bytes):
-    """Anti-grabber no RESULTADO (apanha grabbers ofuscados): esconde tokens e avisa."""
+def _finalize_sync(res_bytes: bytes):
     scan_res = antigrab.scan(res_bytes) if config.get("antigrab", True) else antigrab.ScanResult()
     return antigrab.redact_bytes(res_bytes), scan_res
+
+
+async def finalize_output(res_bytes: bytes):
+    """Anti-grabber no RESULTADO (apanha grabbers ofuscados): esconde tokens e avisa.
+    Corre numa thread para não bloquear o bot em ficheiros grandes."""
+    return await asyncio.to_thread(_finalize_sync, res_bytes)
 
 
 # ---------- FERRAMENTAS (botões gerados a partir desta lista) ----------
@@ -672,7 +757,8 @@ TOOLS = [
      "emoji": "🧪", "row": 1, "match": ()},
 ]
 
-STEPS_RUN = ["Security scan", "Running tool", "Sending result"]
+# Os env loggers só existem como comandos (.l / .l2); não aparecem nos botões do .deobf
+LOGGER_KEYS = {"EnvLog", "EnvLog2"}
 
 
 class ToolButton(discord.ui.Button):
@@ -694,20 +780,29 @@ class ToolButton(discord.ui.Button):
                 return await interaction.response.send_message("Script not found.", ephemeral=True)
             self.view.stop()
             msg = interaction.message
-            await interaction.response.edit_message(embed=pipeline_embed(label, STEPS_RUN, 1, who), view=None)
-            started = time.time()
-            res, err = await self.tool["run"](src)
-            elapsed = time.time() - started
+            t_click = time.time()
+            await interaction.response.edit_message(embed=progress_embed(label, 15, "Running tool", who), view=None)
+
+            def editor(embed):
+                return interaction.edit_original_response(embed=embed)
+
+            res, err, tool_time = await run_with_progress(editor, label, who, self.tool["run"], src, already_shown=True)
             if not res:
                 await interaction.edit_original_response(embed=error_embed(label, err, who))
                 return schedule_delete(msg, 60)
-            await interaction.edit_original_response(embed=pipeline_embed(label, STEPS_RUN, 2, who))
-            out, scan_res = finalize_output(res)
+
+            t1 = time.time()
+            out, scan_res = await finalize_output(res)
+            t2 = time.time()
             file = discord.File(fp=io.BytesIO(out), filename=self.tool["file"])
+            detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
             await interaction.edit_original_response(
-                embed=result_embed(label, len(out), elapsed, scan_res, who),
+                embed=result_embed(label, len(out), t2 - t_click, scan_res, who, detail=detail),
                 attachments=[file],
             )
+            t3 = time.time()
+            print(f"[timing] {label}: tool={tool_time:.1f}s finalize={t2 - t1:.2f}s upload={t3 - t2:.2f}s "
+                  f"total={t3 - t_click:.1f}s in={len(src)}B out={len(out)}B", flush=True)
             schedule_delete(msg, DELETE_AFTER)
         except Exception as e:
             traceback.print_exc()
@@ -725,6 +820,8 @@ class DeobfView(discord.ui.View):
         self.owner_id = owner_id
         self.message = None
         for tool in TOOLS:
+            if tool["key"] in LOGGER_KEYS:
+                continue
             self.add_item(ToolButton(tool, recommended=detected in tool["match"]))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -751,7 +848,7 @@ COMMANDS = {
     "antigrab": ("Utilities", ".antigrab [on|off]", "Turn the Anti-Grabber on or off, or show its status. Administrators only."),
     "setlogs": ("Utilities", ".setlogs", "Use this channel to log blocked uploads. Administrators only."),
     "deobf": ("Tools", ".deobf <url | attachment>",
-              "Detects the obfuscator and shows the matching deobfuscation buttons plus the env loggers."),
+              "Detects the obfuscator and shows the matching deobfuscation buttons."),
     "detector": ("Tools", ".detector <url | attachment>", "Only detects which obfuscator was used."),
     "l": ("Tools", ".l <url | attachment>", "Runs the env logger."),
     "l2": ("Tools", ".l2 <url | attachment>", "Runs env logger 2 (improved)."),
@@ -856,12 +953,12 @@ async def antigrab_cmd(ctx: commands.Context, mode: str = None):
 
 @bot.command(name="deobf")
 async def deobf(ctx: commands.Context, *, url: str = None):
-    prep = await prepare(ctx, url, "Deobfuscator", ["Security scan", "Detecting obfuscator", "Ready"])
+    prep = await prepare(ctx, url, "Deobfuscator")
     if prep is None:
         return
     source, status, scan_res = prep
 
-    results = detect(source.decode("utf-8", "ignore"))
+    results = await asyncio.to_thread(detect, source.decode("utf-8", "ignore"))
     top_name, top_pct = results[0] if results else ("Custom / Unknown", 0.0)
     color, icon = OBF_STYLE.get(top_name, (C_BRAND, None))
     score = score_1_to_10(top_pct) if top_pct > 0 else 0
@@ -879,7 +976,7 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     if any(top_name in t["match"] for t in TOOLS):
         hint = "The green button is the recommended tool for this script."
     else:
-        hint = "No obfuscator recognised. Try any deobfuscator or the Env Loggers."
+        hint = "No obfuscator recognised. Try one of the deobfuscators above, or use `.l` / `.l2` for the env loggers."
     e.add_field(name="➡️ Next step", value=hint, inline=False)
     e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
     if icon:
@@ -893,11 +990,11 @@ async def deobf(ctx: commands.Context, *, url: str = None):
 
 @bot.command(name="detector")
 async def detector(ctx: commands.Context, *, url: str = None):
-    prep = await prepare(ctx, url, "Detector", ["Security scan", "Detecting obfuscator", "Ready"], strict_channel=False)
+    prep = await prepare(ctx, url, "Detector", strict_channel=False)
     if prep is None:
         return
     source, status, scan_res = prep
-    results = detect(source.decode("utf-8", "ignore"))
+    results = await asyncio.to_thread(detect, source.decode("utf-8", "ignore"))
     lines = [f"**{n}**\n`{bar(score_1_to_10(p))}` {score_1_to_10(p)}/10" for n, p in results[:5] if p > 0]
     top_name = results[0][0] if results else "Custom / Unknown"
     color, icon = OBF_STYLE.get(top_name, (C_DARK, None))
@@ -918,9 +1015,6 @@ async def stats(ctx: commands.Context):
     e.add_field(name="⏳ Uptime", value=fmt_uptime(uptime), inline=True)
     e.add_field(name="📶 Latency", value=f"{round(bot.latency * 1000, 1)} ms", inline=True)
     e.add_field(name="🌐 Servers", value=str(len(bot.guilds)), inline=True)
-    state = "🟢 active" if config.get("antigrab", True) else "🔴 off"
-    e.add_field(name="🛡️ Anti-Grabber", value=f"{state} · scripts with token-grabber patterns are blocked", inline=False)
-    e.add_field(name="🗑️ Cleanup", value=f"Your command is removed and results disappear after {DELETE_AFTER // 60} min.", inline=False)
     m = await send(ctx, embed=e)
     schedule_delete(m, 60)
 
@@ -946,24 +1040,32 @@ async def help_cmd(ctx: commands.Context, *, command: str = None):
 
 
 async def _logger_command(ctx: commands.Context, url, runner, label, filename):
-    prep = await prepare(ctx, url, label, STEPS_RUN)
+    t_start = time.time()
+    prep = await prepare(ctx, url, label)
     if prep is None:
         return
     source, status, _ = prep
     who = ctx.author.id
-    await status.edit(embed=pipeline_embed(label, STEPS_RUN, 1, who))
-    started = time.time()
-    res, err = await runner(source)
-    elapsed = time.time() - started
+
+    def editor(embed):
+        return status.edit(embed=embed)
+
+    res, err, tool_time = await run_with_progress(editor, label, who, runner, source)
     if not res:
         await status.edit(embed=error_embed(label, err, who))
         return schedule_delete(status, 60)
-    await status.edit(embed=pipeline_embed(label, STEPS_RUN, 2, who))
-    out, scan_res = finalize_output(res)
+
+    t1 = time.time()
+    out, scan_res = await finalize_output(res)
+    t2 = time.time()
+    detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
     await status.edit(
-        embed=result_embed(label, len(out), elapsed, scan_res, who),
+        embed=result_embed(label, len(out), t2 - t_start, scan_res, who, detail=detail),
         attachments=[discord.File(fp=io.BytesIO(out), filename=filename)],
     )
+    t3 = time.time()
+    print(f"[timing] {label}: tool={tool_time:.1f}s finalize={t2 - t1:.2f}s upload={t3 - t2:.2f}s "
+          f"total={t3 - t_start:.1f}s in={len(source)}B out={len(out)}B", flush=True)
     schedule_delete(status, DELETE_AFTER)
 
 
