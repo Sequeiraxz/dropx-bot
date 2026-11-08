@@ -1,6 +1,7 @@
 import os
 import io
 import asyncio
+import datetime
 import tempfile
 import re
 import json
@@ -40,6 +41,8 @@ USER_MSG_DELETE_AFTER = int(os.environ.get("USER_MSG_DELETE_AFTER", "60"))
 # Anti-grabber: 3 tentativas bloqueadas => bloqueio temporário
 STRIKE_LIMIT = 3
 STRIKE_LOCK_SECONDS = 30 * 60
+# Quem enviar um grabber fica em timeout (mute) durante este tempo
+MUTE_DURATION = datetime.timedelta(days=1)
 
 # Emoji da marca (substitui a lua). O bot tem de estar no servidor do emoji.
 BRAND_EMOJI_ID = 1569037087439724644
@@ -247,7 +250,7 @@ def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: i
     return e
 
 
-def blocked_embed(res, who_id: int, size: int):
+def blocked_embed(res, who_id: int, size: int, punish: str = None):
     e = discord.Embed(
         title="🛡️ Anti-Grabber · Blocked",
         description=(
@@ -259,6 +262,8 @@ def blocked_embed(res, who_id: int, size: int):
     e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     e.add_field(name="Risk", value=f"`{bar(res.score // 10)}` {res.score}/100", inline=True)
     e.add_field(name="Size", value=fmt_bytes(size), inline=True)
+    if punish:
+        e.add_field(name="Punishment", value=punish, inline=False)
     lines = [f"• **{f.label}**" + (f"\n  `{f.sample}`" if f.sample else "") for f in res.findings[:6]]
     e.add_field(name="Findings", value="\n".join(lines)[:1000] or "-", inline=False)
     e.set_footer(text=brand_footer("your message was removed"))
@@ -679,7 +684,21 @@ def add_strike(user_id: int) -> int:
     return s["count"]
 
 
-async def log_block(ctx: commands.Context, res, size: int, command: str):
+async def mute_member(member, reason: str):
+    """Timeout (mute) de 1 dia. Devolve (ok, motivo_da_falha)."""
+    if not isinstance(member, discord.Member):
+        return False, "not a server member"
+    try:
+        await member.timeout(MUTE_DURATION, reason=reason)
+        return True, ""
+    except discord.Forbidden:
+        return False, "missing permission or role above the bot"
+    except Exception as e:
+        return False, repr(e)
+
+
+async def log_block(ctx: commands.Context, res, size: int, command: str,
+                    source: bytes = None, punish: str = None):
     chan_id = config.get("log_channel_id")
     if not chan_id:
         return
@@ -691,13 +710,19 @@ async def log_block(ctx: commands.Context, res, size: int, command: str):
     e.add_field(name="User", value=f"{ctx.author.mention} (`{ctx.author.id}`)", inline=True)
     e.add_field(name="Command", value=f"`.{command}`", inline=True)
     e.add_field(name="Risk", value=f"{res.score}/100 · {fmt_bytes(size)}", inline=True)
+    if punish:
+        e.add_field(name="Punishment", value=punish, inline=False)
     lines = [f"• {f.label}" + (f" — `{f.sample}`" if f.sample else "") for f in res.findings[:8]]
     e.add_field(name="Findings", value="\n".join(lines)[:1000] or "-", inline=False)
     e.set_footer(text=brand_footer())
     try:
-        await chan.send(embed=e)
+        if source:
+            fname = f"blocked_{ctx.author.id}_{int(time.time())}.txt"
+            await chan.send(embed=e, file=discord.File(fp=io.BytesIO(source), filename=fname))
+        else:
+            await chan.send(embed=e)
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 # ---------- PREPARAÇÃO COMUM DOS COMANDOS ----------
@@ -749,9 +774,11 @@ async def prepare(ctx: commands.Context, url, label: str, strict_channel: bool =
     if res.level == "blocked":
         await safe_delete(ctx.message)  # script suspeito: remove já
         add_strike(ctx.author.id)
-        await status.edit(embed=blocked_embed(res, ctx.author.id, len(source)))
+        ok, why = await mute_member(ctx.author, "Anti-Grabber: uploaded a token/credential grabber")
+        punish = "🔇 Muted for 24 hours" if ok else f"⚠️ Could not mute ({why})"
+        await status.edit(embed=blocked_embed(res, ctx.author.id, len(source), punish))
         schedule_delete(status, 90)
-        await log_block(ctx, res, len(source), ctx.command.name if ctx.command else "?")
+        await log_block(ctx, res, len(source), ctx.command.name if ctx.command else "?", source, punish)
         return None
 
     # mensagem do utilizador fica visível pelo menos USER_MSG_DELETE_AFTER segundos
