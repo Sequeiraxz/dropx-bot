@@ -128,7 +128,7 @@ def progress_embed(title: str, pct: float, stage: str, who_id: int = None, color
 
 
 async def _animate(editor, title: str, who_id: int, stage: str, start: float, end: float,
-                   est: float = 10.0, interval: float = 1.5, first_delay: float = 0.0):
+                   est: float = 10.0, interval: float = 2.5, first_delay: float = 0.0):
     """Faz a barra avançar de forma suave até ~90% (usa a duração típica `est` da ferramenta)."""
     try:
         if first_delay:
@@ -159,6 +159,8 @@ async def run_with_progress(editor, label: str, who_id: int, runner, source: byt
         # espera pelo fim da animação para que nenhuma edição antiga chegue depois do resultado
         await asyncio.gather(anim, return_exceptions=True)
     took = time.time() - started
+    print(f"[deliver] {label}: tool finished in {took:.1f}s ok={bool(res)}"
+          + ("" if res else f" err={(err or '')[-300:]!r}"), flush=True)
     if res:
         old = _tool_avg.get(label)
         _tool_avg[label] = took if old is None else 0.6 * old + 0.4 * took
@@ -169,11 +171,44 @@ async def finish_and_scan(editor, label: str, who_id: int, res: bytes):
     """Mostra a barra a 100% enquanto o scan do resultado corre em paralelo."""
     async def _full():
         try:
-            await editor(progress_embed(label, 100, "Delivering", who_id, C_OK))
+            await asyncio.wait_for(editor(progress_embed(label, 100, "Delivering", who_id, C_OK)), 4)
         except Exception:
             pass
-    out_scan, _, _ = await asyncio.gather(finalize_output(res), _full(), asyncio.sleep(0.4))
+
+    async def _scan():
+        try:
+            return await finalize_output(res)
+        except Exception:
+            # o scan nunca pode impedir a entrega: entrega o resultado tal como está
+            traceback.print_exc()
+            return res, antigrab.ScanResult()
+
+    out_scan, _, _ = await asyncio.gather(_scan(), _full(), asyncio.sleep(0.4))
+    print(f"[deliver] {label}: scan done, {len(out_scan[0])} bytes", flush=True)
     return out_scan
+
+
+async def deliver_result(edit_fn, channel, embed, out: bytes, filename: str) -> bool:
+    """Entrega o ficheiro editando a mensagem; se falhar, envia como mensagem nova no canal."""
+    try:
+        await asyncio.wait_for(
+            edit_fn(embed=embed, attachments=[discord.File(fp=io.BytesIO(out), filename=filename)]), 90)
+        print(f"[deliver] {filename}: delivered by edit", flush=True)
+        return True
+    except Exception:
+        traceback.print_exc()
+        print(f"[deliver] {filename}: edit failed, sending a new message", flush=True)
+    try:
+        await channel.send(embed=embed, file=discord.File(fp=io.BytesIO(out), filename=filename))
+        try:
+            await edit_fn(embed=embed)  # tira a barra presa da mensagem original
+        except Exception:
+            pass
+        print(f"[deliver] {filename}: delivered by new message", flush=True)
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def error_embed(tool_label: str, err: str, who_id: int = None):
@@ -811,12 +846,17 @@ class ToolButton(discord.ui.Button):
             t1 = time.time()
             out, scan_res = await finish_and_scan(editor, label, who, res)
             t2 = time.time()
-            file = discord.File(fp=io.BytesIO(out), filename=self.tool["file"])
             detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
-            await interaction.edit_original_response(
-                embed=result_embed(label, len(out), t2 - t_click, scan_res, who, detail=detail),
-                attachments=[file],
+            ok = await deliver_result(
+                lambda **k: interaction.edit_original_response(**k),
+                getattr(interaction.message, "channel", None) or interaction.channel,
+                result_embed(label, len(out), t2 - t_click, scan_res, who, detail=detail),
+                out, self.tool["file"],
             )
+            if not ok:
+                await interaction.edit_original_response(
+                    embed=error_embed(label, "Could not upload the result file to Discord.", who))
+                return schedule_delete(msg, 60)
             t3 = time.time()
             print(f"[timing] {label}: tool={tool_time:.1f}s finalize={t2 - t1:.2f}s upload={t3 - t2:.2f}s "
                   f"total={t3 - t_click:.1f}s in={len(src)}B out={len(out)}B", flush=True)
@@ -1071,10 +1111,15 @@ async def _logger_command(ctx: commands.Context, url, runner, label, filename):
     out, scan_res = await finish_and_scan(editor, label, who, res)
     t2 = time.time()
     detail = f"tool {tool_time:.1f}s · scan {t2 - t1:.1f}s"
-    await status.edit(
-        embed=result_embed(label, len(out), t2 - t_start, scan_res, who, detail=detail),
-        attachments=[discord.File(fp=io.BytesIO(out), filename=filename)],
+    ok = await deliver_result(
+        lambda **k: status.edit(**k),
+        status.channel,
+        result_embed(label, len(out), t2 - t_start, scan_res, who, detail=detail),
+        out, filename,
     )
+    if not ok:
+        await status.edit(embed=error_embed(label, "Could not upload the result file to Discord.", who))
+        return schedule_delete(status, 60)
     t3 = time.time()
     print(f"[timing] {label}: tool={tool_time:.1f}s finalize={t2 - t1:.2f}s upload={t3 - t2:.2f}s "
           f"total={t3 - t_start:.1f}s in={len(source)}B out={len(out)}B", flush=True)
