@@ -230,7 +230,6 @@ def security_text(res: "antigrab.ScanResult") -> str:
 
 
 def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: int, color=C_OK, detail: str = None):
-    deletes_at = int(time.time()) + DELETE_AFTER
     warn = scan_res is not None and scan_res.level in ("suspicious", "blocked")
     e = discord.Embed(
         title="Done" if not warn else "Done · ⚠️ review the output",
@@ -241,9 +240,9 @@ def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: i
     e.add_field(name="🛠️ Tool", value=tool_label, inline=True)
     e.add_field(name="📦 Size", value=fmt_bytes(size), inline=True)
     e.add_field(name="⏱️ Time", value=f"{elapsed:.1f}s" + (f"\n`{detail}`" if detail else ""), inline=True)
-    if scan_res is not None:
+    # só mostra o Anti-Grabber quando há algo a avisar
+    if scan_res is not None and scan_res.level != "clean":
         e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
-    e.add_field(name="🗑️ Auto-delete", value=f"<t:{deletes_at}:R>", inline=False)
     e.set_footer(text=brand_footer())
     return e
 
@@ -1051,8 +1050,8 @@ async def detector(ctx: commands.Context, *, url: str = None):
     top_name = results[0][0] if results else "Custom / Unknown"
     color, icon = OBF_STYLE.get(top_name, (C_DARK, None))
     e = make_embed("Detector", "\n\n".join(lines) or "No obfuscator detected.", color)
-    e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
-    e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
+    if scan_res.level != "clean":  # só mostra o Anti-Grabber quando há algo a avisar
+        e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
     if icon and lines:
         e.set_thumbnail(url=icon)
     await status.edit(embed=e)
