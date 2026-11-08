@@ -123,7 +123,7 @@ def pipeline_embed(title: str, steps: list, active: int, who_id: int = None, col
     desc = "\n".join(lines)
     if who_id:
         desc += f"\n\nRequested by <@{who_id}>"
-    return make_embed(f"{BRAND} {title}", desc, color)
+    return make_embed(title, desc, color)
 
 
 def error_embed(tool_label: str, err: str, who_id: int = None):
@@ -148,7 +148,7 @@ def result_embed(tool_label: str, size: int, elapsed: float, scan_res, who_id: i
     deletes_at = int(time.time()) + DELETE_AFTER
     warn = scan_res is not None and scan_res.level in ("suspicious", "blocked")
     e = discord.Embed(
-        title=f"{BRAND} Done" if not warn else f"{BRAND} Done · ⚠️ review the output",
+        title="Done" if not warn else "Done · ⚠️ review the output",
         description=f"Requested by <@{who_id}>",
         color=C_WARN if warn else color,
     )
@@ -741,7 +741,7 @@ class DeobfView(discord.ui.View):
 # ---------- HELP (com menu dropdown) ----------
 CATEGORIES = {
     "Utilities": {"emoji_text": "⚙️", "emoji_obj": "⚙️"},
-    "Tools": {"emoji_text": BRAND, "emoji_obj": BRAND_PARTIAL},
+    "Tools": {"emoji_text": "🛠️", "emoji_obj": "🛠️"},
 }
 
 COMMANDS = {
@@ -765,16 +765,13 @@ def category_commands(cat: str):
 def help_embed(cat: str, user: discord.abc.User = None):
     info = CATEGORIES[cat]
     e = discord.Embed(
-        title=f"{BRAND} Helper",
+        title="Helper",
         description="Use `.help <command>` for details about a specific command.",
         color=C_BRAND,
     )
     e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     chips = " · ".join(f"`{n}`" for n in category_commands(cat))
     e.add_field(name=f"{info['emoji_text']} {cat}", value=chips, inline=False)
-    state = "🟢 active" if config.get("antigrab", True) else "🔴 off"
-    e.add_field(name="🛡️ Anti-Grabber", value=f"{state} · scripts with token-grabber patterns are blocked", inline=False)
-    e.add_field(name="🗑️ Cleanup", value=f"Your command is removed and results disappear after {DELETE_AFTER // 60} min.", inline=False)
     e.set_thumbnail(url=BRAND_ICON)
     e.set_footer(text=brand_footer(f"requested by {user.display_name}" if user else ""))
     return e
@@ -825,7 +822,7 @@ async def alojar(ctx: commands.Context):
     await safe_delete(ctx.message)
     config["channel_id"] = ctx.channel.id
     save_config(config)
-    m = await send(ctx, embed=make_embed(f"{BRAND} Hosted", f"The bot is now hosted in {ctx.channel.mention}.", C_OK))
+    m = await send(ctx, embed=make_embed("Hosted", f"The bot is now hosted in {ctx.channel.mention}.", C_OK))
     schedule_delete(m, 10)
 
 
@@ -869,7 +866,7 @@ async def deobf(ctx: commands.Context, *, url: str = None):
     color, icon = OBF_STYLE.get(top_name, (C_BRAND, None))
     score = score_1_to_10(top_pct) if top_pct > 0 else 0
 
-    e = discord.Embed(title=f"{BRAND} DropX Deobfuscator", color=color)
+    e = discord.Embed(title="DropX Deobfuscator", color=color)
     e.set_author(name=BOT_NAME, icon_url=BRAND_ICON)
     e.description = f"Requested by {ctx.author.mention}"
     e.add_field(name="🔍 Detected", value=f"**{top_name}**", inline=True)
@@ -904,7 +901,7 @@ async def detector(ctx: commands.Context, *, url: str = None):
     lines = [f"**{n}**\n`{bar(score_1_to_10(p))}` {score_1_to_10(p)}/10" for n, p in results[:5] if p > 0]
     top_name = results[0][0] if results else "Custom / Unknown"
     color, icon = OBF_STYLE.get(top_name, (C_DARK, None))
-    e = make_embed(f"{BRAND} Detector", "\n\n".join(lines) or "No obfuscator detected.", color)
+    e = make_embed("Detector", "\n\n".join(lines) or "No obfuscator detected.", color)
     e.add_field(name="🛡️ Anti-Grabber", value=security_text(scan_res), inline=False)
     e.add_field(name="🗑️ Auto-delete", value=f"<t:{int(time.time()) + DELETE_AFTER}:R>", inline=False)
     if icon and lines:
@@ -917,10 +914,13 @@ async def detector(ctx: commands.Context, *, url: str = None):
 async def stats(ctx: commands.Context):
     await safe_delete(ctx.message)
     uptime = int(time.time() - getattr(bot, "launch_time", time.time()))
-    e = make_embed(f"{BRAND} Stats", None, C_BRAND)
+    e = make_embed("Stats", None, C_BRAND)
     e.add_field(name="⏳ Uptime", value=fmt_uptime(uptime), inline=True)
     e.add_field(name="📶 Latency", value=f"{round(bot.latency * 1000, 1)} ms", inline=True)
     e.add_field(name="🌐 Servers", value=str(len(bot.guilds)), inline=True)
+    state = "🟢 active" if config.get("antigrab", True) else "🔴 off"
+    e.add_field(name="🛡️ Anti-Grabber", value=f"{state} · scripts with token-grabber patterns are blocked", inline=False)
+    e.add_field(name="🗑️ Cleanup", value=f"Your command is removed and results disappear after {DELETE_AFTER // 60} min.", inline=False)
     m = await send(ctx, embed=e)
     schedule_delete(m, 60)
 
@@ -935,7 +935,7 @@ async def help_cmd(ctx: commands.Context, *, command: str = None):
             m = await send(ctx, embed=make_embed("Unknown command", f"`{name}` does not exist. Use `.help`.", C_ERR))
             return schedule_delete(m, 8)
         cat, usage, desc = info
-        e = make_embed(f"{BRAND} Command · {name}", desc, C_BRAND)
+        e = make_embed(f"Command · {name}", desc, C_BRAND)
         e.add_field(name="Usage", value=f"`{usage}`", inline=False)
         e.add_field(name="Category", value=f"{CATEGORIES[cat]['emoji_text']} {cat}", inline=True)
         m = await send(ctx, embed=e)
