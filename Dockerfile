@@ -1,10 +1,14 @@
 # Fase 1: compila o luau e o luau-ast para Linux
 FROM python:3.11-slim AS luau-build
-RUN apt-get update && apt-get install -y --no-install-recommends g++ make git ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make cmake git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch 0.726 https://github.com/luau-lang/luau /luau
 WORKDIR /luau
-RUN make config=release -j2 luau luau-ast
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF && \
+    cmake --build build --target Luau.Repl.CLI Luau.Ast.CLI -j2 && \
+    mkdir /out && \
+    find build -type f \( -name luau -o -name luau-ast \) -exec cp {} /out/ \; && \
+    ls -l /out
 
 # Fase 2: imagem final
 FROM python:3.11-slim
@@ -31,8 +35,8 @@ RUN for d in luraph-deobf luaobfuscator-deobf/luaobfuscator; do \
     done
 
 # Binários Linux do Luau para o Luraph
-COPY --from=luau-build /luau/build/release/luau /app/luraph-deobf/bin/luau
-COPY --from=luau-build /luau/build/release/luau-ast /app/luraph-deobf/bin/luau-ast
+COPY --from=luau-build /out/luau /app/luraph-deobf/bin/luau
+COPY --from=luau-build /out/luau-ast /app/luraph-deobf/bin/luau-ast
 RUN chmod +x /app/luraph-deobf/bin/luau /app/luraph-deobf/bin/luau-ast
 
 ENV PYTHON_BIN=python
