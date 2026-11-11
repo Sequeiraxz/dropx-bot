@@ -1,0 +1,25 @@
+# Luraph deobfuscator
+luraph-deobf/node_modules/
+luraph-deobf/sample/
+luraph-deobf/output/
+luraph-deobf/*.lua
+luraph-deobf/*.txt
+luraph-deobf/package-lock.json
+
+# Scripts de teste
+teste_v14.lua
+teste_v15.lua
+resultado*.lua
+trace*.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Ficheiros locais
+.env
+config.json
+*.log
