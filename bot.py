@@ -56,11 +56,13 @@ WEAREDEVS_EMOJI_ID = 1565837351769481216
 MOONSEC_EMOJI_ID = 1566041038852718692
 MOONVEIL_EMOJI_ID = 1566062539962323085
 LUAOBF_EMOJI_ID = 1566411737727770714
+LURAPH_EMOJI_ID = 1570064264285392986
 
 WEAREDEVS_ICON = "https://www.google.com/s2/favicons?domain=wearedevs.net&sz=128"
 MOONSEC_ICON = f"https://cdn.discordapp.com/emojis/{MOONSEC_EMOJI_ID}.png"
 MOONVEIL_ICON = f"https://cdn.discordapp.com/emojis/{MOONVEIL_EMOJI_ID}.png"
 LUAOBF_ICON = f"https://cdn.discordapp.com/emojis/{LUAOBF_EMOJI_ID}.png"
+LURAPH_ICON = f"https://cdn.discordapp.com/emojis/{LURAPH_EMOJI_ID}.png"
 BRAND_ICON = f"https://cdn.discordapp.com/emojis/{BRAND_EMOJI_ID}.png"
 
 # ---------- ESTILO ----------
@@ -76,7 +78,7 @@ OBF_STYLE = {
     "MoonSec V2": (0x3498DB, MOONSEC_ICON),
     "MoonVeil": (0x9B59B6, MOONVEIL_ICON),
     "LuaObfuscator VM": (0xF1C40F, LUAOBF_ICON),
-    "Luraph": (0xE91E63, None),
+    "Luraph": (0xE91E63, LURAPH_ICON),
     "Custom / Unknown": (0x95A5A6, None),
 }
 
@@ -884,7 +886,7 @@ TOOLS = [
      "emoji": discord.PartialEmoji(name="luaobf", id=LUAOBF_EMOJI_ID), "row": 0,
      "match": ("LuaObfuscator VM", "LuaObfuscator")},
     {"key": "Luraph", "label": "Luraph", "run": run_luraph, "file": "deobfuscated.lua",
-     "emoji": "🔓", "row": 0, "match": ("Luraph",)},
+     "emoji": discord.PartialEmoji(name="luraph", id=LURAPH_EMOJI_ID), "row": 0, "match": ("Luraph",)},
     {"key": "EnvLog", "label": "Env Logger", "run": run_envlog, "file": "envlog_output.lua",
      "emoji": "📜", "row": 1, "match": ()},
     {"key": "EnvLog2", "label": "Env Logger 2", "run": run_envlog2, "file": "envlog2_output.lua",
