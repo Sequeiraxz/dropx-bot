@@ -23,6 +23,9 @@ DEOBF_DIR = os.environ.get("DEOBF_DIR", "./Prometheus-Deobfuscator-main")
 MOONSEC_V2_DIR = os.path.join(BASE_DIR, "moonsec-v2-deobfuscator")
 MOONVEIL_DIR = os.path.join(BASE_DIR, "moonveil-deobf")
 LUAOBFUSCATOR_DIR = os.path.join(BASE_DIR, "luaobfuscator-deobf", "luaobfuscator")
+LURAPH_DIR = os.path.join(BASE_DIR, "luraph-deobf")
+LURAPH_CMD = [os.environ.get("NODE", "node"), "deob.js", "{in}", "-o", "{out}"]
+LURAPH_TIMEOUT = int(os.environ.get("LURAPH_TIMEOUT", "300"))
 ENVLOG_PATH = os.path.join(BASE_DIR, "envlog.luau")
 ENVLOG2_PATH = os.environ.get("ENVLOG2_PATH", os.path.join(BASE_DIR, "envlog2.luau"))
 NODE = os.environ.get("NODE", "node")
@@ -73,6 +76,7 @@ OBF_STYLE = {
     "MoonSec V2": (0x3498DB, MOONSEC_ICON),
     "MoonVeil": (0x9B59B6, MOONVEIL_ICON),
     "LuaObfuscator VM": (0xF1C40F, LUAOBF_ICON),
+    "Luraph": (0xE91E63, None),
     "Custom / Unknown": (0x95A5A6, None),
 }
 
@@ -299,6 +303,7 @@ bot.remove_command("help")
 
 _moonsec_lock = asyncio.Lock()
 _moonveil_lock = asyncio.Lock()
+_luraph_sem = asyncio.Semaphore(2)
 _bg_tasks = set()
 _strikes = {}  # user_id -> {"count": int, "until": float}
 _tool_avg = {}  # label -> duração média (s) da ferramenta, para calibrar a barra
@@ -375,12 +380,18 @@ SIGNATURES = {
         (50, re.compile(r'return\s+v15\s*\(\s*"LOL!')),
         (15, re.compile(r'getfenv\s+or\s+function\s*\(\s*\)\s*return\s+_ENV')),
     ],
+    "Luraph": [
+        (60, re.compile(r'--\s*This (?:file|script) was (?:protected|generated) using Luraph Obfuscator')),
+        (55, re.compile(r'"LPH\|[0-9A-Fa-f]{20,}"')),
+        (35, re.compile(r'return\s*\(\s*\{[A-Z]{1,3}=bit32\.\w+')),
+    ],
 }
 _DEFINITELY_OBF = [
     re.compile(r'Protected_by_MoonSecV2'),
     re.compile(r'This script was generated using (?:the )?MoonVeil'),
     re.compile(r'return\s+v15\s*\(\s*"LOL!'),
     re.compile(r'[\u3480-\u34c0]{5,}'),
+    re.compile(r'This (?:file|script) was (?:protected|generated) using Luraph'),
 ]
 _WEAREDEVS_SIGNALS = [
     re.compile(r'wearedevs\.net/obfuscator'),
@@ -576,6 +587,49 @@ async def run_luaobfuscator(source: bytes):
             if proc.returncode != 0:
                 return None, stderr.decode("utf-8", "replace").strip()[-1200:] or f"exit code {proc.returncode}"
             return stdout, ""
+
+
+async def run_luraph(source: bytes):
+    if not os.path.isdir(LURAPH_DIR):
+        return None, "luraph-deobf folder missing"
+    async with _luraph_sem:
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = os.path.join(tmp, "input.lua")
+            out_path = os.path.join(tmp, "out.lua")
+            with open(in_path, "wb") as f:
+                f.write(source)
+            cmd = [a.replace("{in}", in_path).replace("{out}", out_path) for a in LURAPH_CMD]
+            # ambiente limpo: o script de terceiros não vê o DISCORD_TOKEN
+            safe_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", "/tmp"),
+                "PYTHON_BIN": os.environ.get("PYTHON_BIN", "python"),
+            }
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, cwd=LURAPH_DIR, env=safe_env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=LURAPH_TIMEOUT)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                return None, f"timeout ({LURAPH_TIMEOUT}s)"
+            except FileNotFoundError:
+                return None, f"command not found: {LURAPH_CMD[0]}"
+            if proc.returncode != 0:
+                msg = (stdout + stderr).decode("utf-8", "replace").strip()
+                return None, msg[-1200:] or f"exit code {proc.returncode}"
+            if os.path.exists(out_path):
+                with open(out_path, "rb") as f:
+                    return f.read(), ""
+            if stdout.strip():
+                return stdout, ""
+            return None, "no output produced"
 
 
 def envlog_config_lua() -> str:
@@ -829,6 +883,8 @@ TOOLS = [
     {"key": "LuaObfuscator", "label": "LuaObfuscator", "run": run_luaobfuscator, "file": "deobfuscated.lua",
      "emoji": discord.PartialEmoji(name="luaobf", id=LUAOBF_EMOJI_ID), "row": 0,
      "match": ("LuaObfuscator VM", "LuaObfuscator")},
+    {"key": "Luraph", "label": "Luraph", "run": run_luraph, "file": "deobfuscated.lua",
+     "emoji": "🔓", "row": 0, "match": ("Luraph",)},
     {"key": "EnvLog", "label": "Env Logger", "run": run_envlog, "file": "envlog_output.lua",
      "emoji": "📜", "row": 1, "match": ()},
     {"key": "EnvLog2", "label": "Env Logger 2", "run": run_envlog2, "file": "envlog2_output.lua",
@@ -1194,6 +1250,7 @@ async def main():
     print(f">>> LUNE={LUNE} exists={os.path.exists(LUNE)}", flush=True)
     print(f">>> ENVLOG_PATH={ENVLOG_PATH} exists={os.path.exists(ENVLOG_PATH)}", flush=True)
     print(f">>> ENVLOG2_PATH={ENVLOG2_PATH} exists={os.path.exists(ENVLOG2_PATH)}", flush=True)
+    print(f">>> LURAPH_DIR={LURAPH_DIR} exists={os.path.isdir(LURAPH_DIR)}", flush=True)
     print(f">>> CONFIG_FILE={CONFIG_FILE}", flush=True)
     await start_web_server()
     await bot.start(TOKEN)
